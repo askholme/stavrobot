@@ -290,10 +290,8 @@ describe("send_signal_message — rate limiting", () => {
     const tool = createSendSignalMessageTool(pool, config);
     const result = await tool.execute("call-1", { recipient: "+1234567890", message: "hello" });
     const text = makeText(result);
-    expect(text).toContain("rate limiting");
-    expect(text).toContain("signalcaptchas.org");
-    expect(text).toContain("run_python");
-    expect(text).toContain("signal-bridge:8081/challenge");
+    expect(text).toContain("rate-limiting");
+    expect(text).toContain("https://example.com/signal/captcha");
   });
 
 });

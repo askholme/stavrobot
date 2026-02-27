@@ -329,18 +329,9 @@ export function createTextToSpeechTool(ttsConfig: TtsConfig): AgentTool {
   };
 }
 
-const SIGNAL_RATE_LIMIT_MESSAGE = `Message could not be sent due to Signal rate limiting. To resolve this:
-1. Ask the user to open https://signalcaptchas.org/challenge/generate.html in their browser and solve the captcha.
-2. The user will receive a signalcaptcha:// URL after solving it. Ask them to paste it in the chat.
-3. Once you have the URL, use run_python to submit it:
-
-import urllib.request, json
-data = json.dumps({"captcha": "PASTE_THE_SIGNALCAPTCHA_URL_HERE"}).encode()
-request = urllib.request.Request("http://signal-bridge:8081/challenge", data=data, headers={"Content-Type": "application/json"})
-response = urllib.request.urlopen(request)
-print(response.read().decode())
-
-4. After a successful challenge submission, retry sending the original message.`;
+function signalRateLimitMessage(publicHostname: string): string {
+  return `Message could not be sent because Signal is rate-limiting this account. Direct the user to ${publicHostname}/signal/captcha to solve the captcha. Do not attempt to resolve this yourself.`;
+}
 
 export function createSendSignalMessageTool(pool: pg.Pool, config: Config): AgentTool {
   return {
@@ -464,9 +455,10 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
 
         if (response.status === 429) {
           console.warn("[stavrobot] send_signal_message rate limited by bridge (attachment path)");
+          const rateLimitMessage = signalRateLimitMessage(config.publicHostname);
           return {
-            content: [{ type: "text" as const, text: SIGNAL_RATE_LIMIT_MESSAGE }],
-            details: { message: SIGNAL_RATE_LIMIT_MESSAGE },
+            content: [{ type: "text" as const, text: rateLimitMessage }],
+            details: { message: rateLimitMessage },
           };
         }
 
@@ -507,9 +499,10 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
       const sendResult = await sendSignalMessage(recipient, message as string);
       if (sendResult === "rate_limited") {
         console.warn("[stavrobot] send_signal_message rate limited by bridge (text-only path)");
+        const rateLimitMessage = signalRateLimitMessage(config.publicHostname);
         return {
-          content: [{ type: "text" as const, text: SIGNAL_RATE_LIMIT_MESSAGE }],
-          details: { message: SIGNAL_RATE_LIMIT_MESSAGE },
+          content: [{ type: "text" as const, text: rateLimitMessage }],
+          details: { message: rateLimitMessage },
         };
       }
 

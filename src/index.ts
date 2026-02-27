@@ -34,6 +34,7 @@ import {
   handleGetAllowlistRequest,
   handlePutAllowlistRequest,
 } from "./settings.js";
+import { serveSignalCaptchaPage, handleSignalCaptchaSubmit } from "./signal-captcha.js";
 
 function isPublicRoute(method: string, pathname: string): boolean {
   if (method === "POST" && pathname === "/telegram/webhook") {
@@ -509,6 +510,10 @@ async function main(): Promise<void> {
       handleGetAllowlistRequest(response, config);
     } else if (request.method === "PUT" && pathname === "/api/settings/allowlist") {
       void handlePutAllowlistRequest(request, response, config);
+    } else if (request.method === "GET" && pathname === "/signal/captcha") {
+      serveSignalCaptchaPage(response);
+    } else if (request.method === "POST" && pathname === "/signal/captcha") {
+      void handleSignalCaptchaSubmit(request, response);
     } else if (request.method === "GET" && pathname.startsWith("/api/pages/") && pathname.includes("/queries/")) {
       void handlePageQueryRequest(request, response, pathname, config.password, pool, url);
     } else if (request.method === "GET" && pathname.startsWith("/pages/")) {
