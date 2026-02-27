@@ -309,7 +309,7 @@ const SETTINGS_PAGE_HTML = `<!DOCTYPE html>
       const input = document.getElementById("signal-input");
       const value = input.value.trim();
       if (!value) return;
-      if (!/^\+[1-9]\d{1,14}$/.test(value)) {
+      if (!/^\\+[1-9]\\d{1,14}$/.test(value)) {
         setStatus("Invalid number: must be in E.164 format (e.g. +1234567890).", true);
         return;
       }
