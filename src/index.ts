@@ -172,15 +172,26 @@ async function handleChatRequest(
   }
 }
 
-async function handleTelegramWebhookRequest(
+export async function handleTelegramWebhookRequest(
   request: http.IncomingMessage,
   response: http.ServerResponse,
-  telegramConfig: TelegramConfig | undefined
+  telegramConfig: TelegramConfig | undefined,
+  webhookSecret: string | undefined
 ): Promise<void> {
   if (telegramConfig === undefined) {
     response.writeHead(404, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: "Not found" }));
     return;
+  }
+
+  if (webhookSecret !== undefined) {
+    const providedSecret = request.headers["x-telegram-bot-api-secret-token"];
+    if (providedSecret !== webhookSecret) {
+      console.log("[stavrobot] Telegram webhook rejected: invalid or missing secret token.");
+      response.writeHead(403, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Forbidden" }));
+      return;
+    }
   }
 
   try {
@@ -378,11 +389,12 @@ async function main(): Promise<void> {
   initializeQueue(agent, pool, config);
   await initializeScheduler(pool);
 
+  let telegramWebhookSecret: string | undefined;
   if (config.telegram !== undefined) {
     if (config.publicHostname === undefined) {
       throw new Error("Config must specify publicHostname when telegram is configured.");
     }
-    await registerTelegramWebhook(config.telegram, config.publicHostname);
+    telegramWebhookSecret = await registerTelegramWebhook(config.telegram, config.publicHostname);
   }
 
   const server = http.createServer((request: http.IncomingMessage, response: http.ServerResponse): void => {
@@ -406,7 +418,7 @@ async function main(): Promise<void> {
     } else if (request.method === "POST" && pathname === "/chat") {
       handleChatRequest(request, response);
     } else if (request.method === "POST" && pathname === "/telegram/webhook") {
-      handleTelegramWebhookRequest(request, response, config.telegram);
+      handleTelegramWebhookRequest(request, response, config.telegram, telegramWebhookSecret);
     } else if (request.method === "GET" && pathname === "/providers/anthropic/login") {
       serveLoginPage(response);
     } else if (request.method === "POST" && pathname === "/providers/anthropic/login") {

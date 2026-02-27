@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Marked, type RendererObject, type Tokens } from "marked";
 import type { TelegramConfig } from "./config.js";
 import { enqueueMessage } from "./queue.js";
@@ -141,8 +142,9 @@ function isTelegramMessage(value: unknown): value is TelegramMessage {
   );
 }
 
-export async function registerTelegramWebhook(config: TelegramConfig, publicHostname: string): Promise<void> {
+export async function registerTelegramWebhook(config: TelegramConfig, publicHostname: string): Promise<string> {
   const webhookUrl = `${publicHostname}/telegram/webhook`;
+  const secret = randomUUID();
   console.log("[stavrobot] Registering Telegram webhook:", webhookUrl);
 
   const response = await fetch(
@@ -150,7 +152,7 @@ export async function registerTelegramWebhook(config: TelegramConfig, publicHost
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: webhookUrl }),
+      body: JSON.stringify({ url: webhookUrl, secret_token: secret }),
     }
   );
 
@@ -161,6 +163,7 @@ export async function registerTelegramWebhook(config: TelegramConfig, publicHost
   }
 
   console.log("[stavrobot] Telegram webhook registered successfully.");
+  return secret;
 }
 
 async function downloadTelegramFile(config: TelegramConfig, fileId: string): Promise<Buffer> {
