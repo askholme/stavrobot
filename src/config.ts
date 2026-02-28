@@ -13,14 +13,6 @@ export interface PostgresConfig {
   password: string;
 }
 
-export interface TtsConfig {
-  provider: string;
-  apiKey: string;
-  model: string;
-  voice: string;
-  instructions?: string;
-}
-
 export interface SttConfig {
   provider: string;
   apiKey: string;
@@ -71,7 +63,6 @@ export interface Config {
   compactionPrompt: string;
   baseAgentPrompt: string;
   customPrompt?: string;
-  tts?: TtsConfig;
   stt?: SttConfig;
   webSearch?: WebSearchConfig;
   webFetch?: WebFetchConfig;

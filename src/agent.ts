@@ -3,7 +3,7 @@ import path from "node:path";
 import pg from "pg";
 import { Type, getModel, type TextContent, type ImageContent, type AssistantMessage, type ToolCall, complete } from "@mariozechner/pi-ai";
 import { Agent, type AgentTool, type AgentToolResult, type AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Config, TtsConfig } from "./config.js";
+import type { Config } from "./config.js";
 import { isInAllowlist } from "./allowlist.js";
 import type { FileAttachment } from "./uploads.js";
 import { transcribeAudio } from "./stt.js";
@@ -272,64 +272,6 @@ export function createManageKnowledgeTool(pool: pg.Pool): AgentTool {
   };
 }
 
-export function createTextToSpeechTool(ttsConfig: TtsConfig): AgentTool {
-  return {
-    name: "text_to_speech",
-    label: "Text to speech",
-    description: "Convert text to speech audio. Returns a file path to the generated audio file. Use this to create voice notes that can be sent via send_signal_message.",
-    parameters: Type.Object({
-      text: Type.String({ description: "The text to convert to speech." }),
-    }),
-    execute: async (
-      toolCallId: string,
-      params: unknown
-    ): Promise<AgentToolResult<{ filePath: string }>> => {
-      const { text } = params as { text: string };
-
-      console.log("[stavrobot] text_to_speech called: text length", text.length);
-
-      // tts-1 and tts-1-hd are legacy models that don't support the instructions field.
-      const supportsInstructions = ttsConfig.model !== "tts-1" && ttsConfig.model !== "tts-1-hd";
-      const requestBody: Record<string, string> = {
-        model: ttsConfig.model,
-        voice: ttsConfig.voice,
-        input: text,
-        response_format: "mp3",
-      };
-      if (ttsConfig.instructions !== undefined && supportsInstructions) {
-        requestBody["instructions"] = ttsConfig.instructions;
-      }
-
-      const response = await fetch("https://api.openai.com/v1/audio/speech", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${ttsConfig.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`OpenAI TTS API error ${response.status}: ${errorText}`);
-      }
-
-      const audioBuffer = Buffer.from(await response.arrayBuffer());
-      await fs.mkdir(TEMP_ATTACHMENTS_DIR, { recursive: true });
-      const tempDirectory = await fs.mkdtemp(path.join(TEMP_ATTACHMENTS_DIR, "tts-"));
-      const filePath = path.join(tempDirectory, "audio.mp3");
-      await fs.writeFile(filePath, audioBuffer);
-
-      console.log("[stavrobot] text_to_speech result:", filePath);
-
-      return {
-        content: [{ type: "text" as const, text: filePath }],
-        details: { filePath },
-      };
-    },
-  };
-}
-
 function signalRateLimitMessage(publicHostname: string): string {
   return `Message could not be sent because Signal is rate-limiting this account. Direct the user to ${publicHostname}/signal/captcha to solve the captcha. Do not attempt to resolve this yourself.`;
 }
@@ -338,11 +280,11 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
   return {
     name: "send_signal_message",
     label: "Send Signal message",
-    description: "Send a message via Signal to a display name or phone number. Can send text, a file attachment (from manage_files or text_to_speech), or both.",
+    description: "Send a message via Signal to a display name or phone number. Can send text, a file attachment (from manage_files or a plugin tool), or both.",
     parameters: Type.Object({
       recipient: Type.String({ description: "Display name of the recipient (e.g., \"Mom\") or phone number in international format (e.g., \"+1234567890\")." }),
       message: Type.Optional(Type.String({ description: "Text message to send." })),
-      attachmentPath: Type.Optional(Type.String({ description: "File path to an attachment under the temp directory (e.g., from manage_files write or text_to_speech)." })),
+      attachmentPath: Type.Optional(Type.String({ description: "File path to an attachment under the temp directory (e.g., from manage_files write or a plugin tool)." })),
     }),
     execute: async (
       toolCallId: string,
@@ -524,7 +466,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
     parameters: Type.Object({
       recipient: Type.String({ description: "Display name of the recipient (e.g., \"Mom\") or Telegram chat ID." }),
       message: Type.Optional(Type.String({ description: "Text message to send. Markdown formatting is supported." })),
-      attachmentPath: Type.Optional(Type.String({ description: "File path to an attachment under the temp directory (e.g., from manage_files write or text_to_speech). Images (jpg, jpeg, png, gif, webp), audio (mp3, ogg, oga, wav, m4a), and any other file type are supported." })),
+      attachmentPath: Type.Optional(Type.String({ description: "File path to an attachment under the temp directory (e.g., from manage_files write or a plugin tool). Images (jpg, jpeg, png, gif, webp), audio (mp3, ogg, oga, wav, m4a), and any other file type are supported." })),
     }),
     execute: async (
       toolCallId: string,
@@ -710,7 +652,7 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
     parameters: Type.Object({
       recipient: Type.String({ description: "Display name of the recipient (e.g., \"Mom\") or phone number in E.164 format (e.g., \"+1234567890\")." }),
       message: Type.Optional(Type.String({ description: "Text message to send." })),
-      attachmentPath: Type.Optional(Type.String({ description: "File path to an attachment under the temp directory (e.g., from manage_files write or text_to_speech). Images (jpg, jpeg, png, gif, webp), audio (mp3, ogg, oga, wav, m4a), video (mp4, mov, avi, mkv), and any other file type are supported." })),
+      attachmentPath: Type.Optional(Type.String({ description: "File path to an attachment under the temp directory (e.g., from manage_files write or a plugin tool). Images (jpg, jpeg, png, gif, webp), audio (mp3, ogg, oga, wav, m4a), video (mp4, mov, avi, mkv), and any other file type are supported." })),
     }),
     execute: async (
       toolCallId: string,
@@ -1023,9 +965,6 @@ export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent>
   }
   if (config.webFetch !== undefined) {
     tools.push(createWebFetchTool(config.webFetch));
-  }
-  if (config.tts !== undefined) {
-    tools.push(createTextToSpeechTool(config.tts));
   }
   tools.push(
     createManagePluginsTool({ coderEnabled: config.coder !== undefined }),

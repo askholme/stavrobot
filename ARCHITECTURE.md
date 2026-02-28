@@ -4,7 +4,7 @@ This document describes the architecture of Stavrobot, a single-user personal AI
 
 ## System overview
 
-Stavrobot is an LLM-powered personal assistant that runs as a set of Docker containers. The owner interacts with it via a CLI client, Signal, Telegram, or WhatsApp. The main agent can create subagents, each with their own conversation history, system prompt, and tool whitelist. Interlocutors are contact records that can be assigned to agents for inbound message routing. The LLM agent (Anthropic Claude) has access to a PostgreSQL database, a plugin system, sandboxed Python execution, web search/fetch, cron scheduling, text-to-speech, speech-to-text, and a self-programming subsystem that can create new tools at runtime.
+Stavrobot is an LLM-powered personal assistant that runs as a set of Docker containers. The owner interacts with it via a CLI client, Signal, Telegram, or WhatsApp. The main agent can create subagents, each with their own conversation history, system prompt, and tool whitelist. Interlocutors are contact records that can be assigned to agents for inbound message routing. The LLM agent (Anthropic Claude) has access to a PostgreSQL database, a plugin system, sandboxed Python execution, web search/fetch, cron scheduling, speech-to-text, and a self-programming subsystem that can create new tools at runtime.
 
 All messages flow through a single `POST /chat` endpoint on the main app. The agent processes one message at a time via an in-memory queue.
 
@@ -380,7 +380,6 @@ Subagents only see the tools in their `allowed_tools` whitelist plus `send_agent
 **Conditionally available:**
 - `web_search` — Search the web via Anthropic's server-side web search tool (requires `[webSearch]` config).
 - `web_fetch` — Fetch a URL and process its content with an LLM (requires `[webFetch]` config).
-- `text_to_speech` — Convert text to speech via OpenAI TTS API (requires `[tts]` config).
 - `send_telegram_message` — Send text or attachments via Telegram. Accepts display names as recipients (requires `[telegram]` config).
 - `send_whatsapp_message` — Send text or attachments via WhatsApp. Accepts display names as recipients (requires `[whatsapp]` config).
 - `request_coding_task` — Send coding tasks to the coder agent (requires `[coder]` config).
@@ -535,7 +534,6 @@ Defines the owner's identity. Used on startup to upsert the owner interlocutor r
 
 - `password` — HTTP Basic Auth password for all endpoints.
 - `customPrompt` — Additional instructions appended to the base system prompt (owner conversations only).
-- `[tts]` — Text-to-speech (OpenAI API).
 - `[stt]` — Speech-to-text (OpenAI API).
 - `[webSearch]` — Web search sub-agent.
 - `[webFetch]` — Web fetch sub-agent.
