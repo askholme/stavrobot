@@ -32,7 +32,7 @@ PostgreSQL 17. Health-checked with `pg_isready`. The app waits for it to be heal
 
 A Node.js 22 HTTP server that manages and executes plugins. Has no LLM. Built with a multi-stage Dockerfile. The production image includes `uv`, `python3`, `git`, `openssh-client`, `curl`, and `build-essential` so plugins can use any of these runtimes.
 
-Handles both git-installed plugins and locally created (editable) plugins. Creates a dedicated Unix system user per plugin (`plug_<name>`) and restricts each plugin's directory with `chmod 700`, so plugins cannot read each other's files or configuration.
+Handles both git-installed plugins and locally created (editable) plugins. Creates a dedicated Unix system user per plugin (`plug_<name>` with hyphens replaced by underscores) and restricts each plugin's directory with `chmod 700`, so plugins cannot read each other's files or configuration.
 
 Mounts: `./data/main:/config` (reads config.toml for the app password), `./data/plugins:/plugins`, `./cache/plugins:/cache`.
 
@@ -69,6 +69,76 @@ Mounts: `./data/main:/app/config:ro`, `./data/signal-cli:/root/.local/share/sign
 A PostgreSQL 17 container that runs `pg_dump | gzip` on a configurable interval (default: daily). Implements a retention policy: keeps the 30 most recent backups, plus one per month for 12 months, plus one per year forever.
 
 Mounts: `./scripts:/scripts:ro`, `./data/db-backups:/backups`.
+
+## HTTP routes
+
+All routes are defined in `src/index.ts` as a flat if/else chain in the `http.createServer` callback. There is no routing framework. Routes are matched by `request.method` and `pathname` (from `new URL(request.url)`).
+
+### Public routes (no auth required)
+
+| Method | Path | Handler | Notes |
+|--------|------|---------|-------|
+| POST | `/telegram/webhook` | `handleTelegramWebhookRequest` | Validated by `x-telegram-bot-api-secret-token` header |
+| GET | `/pages/*` | `handlePageRequest` | Per-row auth: handler checks `is_public` |
+| GET | `/api/pages/*/queries/*` | `handlePageQueryRequest` | Per-row auth: handler checks `is_public` |
+
+### Authenticated routes (HTTP Basic Auth required)
+
+| Method | Path | Handler | File |
+|--------|------|---------|------|
+| POST | `/chat` | `handleChatRequest` | `index.ts` |
+| POST | `/api/upload` | `handleUploadRequest` | `uploads.ts` |
+| GET | `/providers/anthropic/login` | `serveLoginPage` | `login.ts` |
+| POST | `/providers/anthropic/login` | `handleLoginPost` | `login.ts` |
+| GET | `/explorer` | `serveExplorerPage` | `explorer.ts` |
+| GET | `/api/explorer/tables` | `handleTablesRequest` | `explorer.ts` |
+| GET | `/api/explorer/tables/:name` | `handleTableSchemaRequest` | `explorer.ts` |
+| GET | `/api/explorer/tables/:name/rows` | `handleTableRowsRequest` | `explorer.ts` |
+| GET | `/settings` | `serveSettingsHubPage` | `settings.ts` |
+| GET | `/settings/allowlist` | `serveAllowlistPage` | `settings.ts` |
+| GET | `/api/settings/allowlist` | `handleGetAllowlistRequest` | `settings.ts` |
+| PUT | `/api/settings/allowlist` | `handlePutAllowlistRequest` | `settings.ts` |
+| GET | `/settings/plugins` | `servePluginsPage` | `plugins.ts` |
+| GET | `/plugins` | redirect → `/settings/plugins` | `index.ts` |
+| GET | `/api/settings/plugins/list` | `handlePluginsListRequest` | `plugins.ts` |
+| GET | `/api/settings/plugins/:name/detail` | `handlePluginDetailRequest` | `plugins.ts` |
+| GET | `/api/settings/plugins/:name/config` | `handlePluginConfigRequest` | `plugins.ts` |
+| POST | `/api/settings/plugins/install` | `handlePluginInstallRequest` | `plugins.ts` |
+| POST | `/api/settings/plugins/update` | `handlePluginUpdateRequest` | `plugins.ts` |
+| POST | `/api/settings/plugins/remove` | `handlePluginRemoveRequest` | `plugins.ts` |
+| POST | `/api/settings/plugins/configure` | `handlePluginConfigureRequest` | `plugins.ts` |
+| GET | `/signal/captcha` | `serveSignalCaptchaPage` | `signal-captcha.ts` |
+| POST | `/signal/captcha` | `handleSignalCaptchaSubmit` | `signal-captcha.ts` |
+
+### Internal server (port 3001, no auth)
+
+| Method | Path | Handler |
+|--------|------|---------|
+| POST | `/chat` | `handleChatRequest` |
+
+## UI pages (server-rendered HTML)
+
+All UI pages are served as inline HTML string constants in their respective source files. There is no template engine, no static file serving, and no frontend build step. JavaScript is inlined in `<script>` tags.
+
+| URL | Source file | Description |
+|-----|-------------|-------------|
+| `/explorer` | `src/explorer.ts` (`EXPLORER_PAGE_HTML`) | Database table browser with pagination, sorting, schema view |
+| `/settings` | `src/settings.ts` (`SETTINGS_HUB_HTML`) | Hub page with links to sub-settings |
+| `/settings/allowlist` | `src/settings.ts` (`SETTINGS_PAGE_HTML`) | Manage Signal/Telegram/WhatsApp allowlists |
+| `/settings/plugins` | `src/plugins.ts` (`PLUGINS_PAGE_HTML`) | Install/update/remove plugins, configure plugin config |
+| `/signal/captcha` | `src/signal-captcha.ts` (`SIGNAL_CAPTCHA_PAGE_HTML`) | Signal rate-limit captcha submission form |
+| `/providers/anthropic/login` | `src/login.ts` (`LOGIN_PAGE_HTML`) | Anthropic OAuth PKCE login flow |
+| `/pages/<path>` | `src/index.ts` → `database.ts` | LLM-created pages, served from the `pages` DB table |
+
+## Pages system
+
+The `pages` table stores HTML (or any MIME type) content created by the LLM agent via the `manage_pages` tool (`src/pages.ts`). Pages are served at `GET /pages/<path>`.
+
+- **Auth:** The `/pages/` prefix is whitelisted in `isPublicRoute()` so the route is reachable without a session cookie. The `handlePageRequest` handler then checks `page.isPublic`: if false and a password is configured, it enforces HTTP Basic Auth.
+- **Queries:** Pages can declare named SQL queries in the `queries` JSONB column. These are served at `GET /api/pages/<path>/queries/<name>` and accept `$param:name` placeholders resolved from query string parameters. Only `SELECT`/`WITH` queries are allowed. Auth follows the same `is_public` pattern.
+- **MIME type:** Stored in the `mimetype` column; served as the `Content-Type` header. Supports any MIME type (HTML, CSS, JSON, etc.).
+- **Content:** Stored as `BYTEA` (via `convert_to($content, 'UTF8')`), returned as a raw buffer.
+- **Security:** The `manage_pages` tool instructs the agent to default `is_public` to false and only set it true on explicit user request.
 
 ## Message flow
 
@@ -303,6 +373,7 @@ The agent has access to these tools, conditionally enabled based on configuratio
 - `manage_files` — Write, read, list, or delete files in an ephemeral temp directory (`/tmp/stavrobot-temp/files/`). Supports utf-8 and base64 encodings. File paths can be passed as `attachmentPath` to `send_signal_message` or `send_telegram_message`.
 - `manage_plugins` — Install, update, remove, configure, list, or show plugins.
 - `run_plugin_tool` — Execute a plugin tool.
+- `search` — Full-text search across the database.
 
 Subagents only see the tools in their `allowed_tools` whitelist plus `send_agent_message`. The main agent always sees the full tool set.
 
@@ -509,6 +580,7 @@ src/
   temp-dir.ts           — Shared constant for the ephemeral temp directory path.
   explorer.ts           — Database explorer web UI and API.
   settings.ts           — Settings web UI and allowlist management API endpoints (/settings, /api/settings/allowlist).
+  signal-captcha.ts     — Signal rate-limit captcha submission web UI and proxy to signal-bridge.
 
 plugin-runner/
   src/index.ts      — Plugin runner server (manages, executes plugins).
@@ -558,3 +630,4 @@ entrypoint.sh       — App container entrypoint.
 - `cron-parser` — Cron expression parsing for the scheduler.
 - `marked` — Markdown parsing for Telegram HTML conversion.
 - `@toon-format/toon` — Serialises structured data (objects, arrays) to TOON format for LLM-readable output. Used in `toon.ts` via `encodeToToon()`.
+- `@whiskeysockets/baileys` — WhatsApp Web API client (runs in-process in the app container).

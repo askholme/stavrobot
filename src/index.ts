@@ -36,6 +36,7 @@ import {
 } from "./settings.js";
 import { serveSignalCaptchaPage, handleSignalCaptchaSubmit } from "./signal-captcha.js";
 import { initializeWhatsApp } from "./whatsapp.js";
+import { serveHomePage } from "./home.js";
 
 function isPublicRoute(method: string, pathname: string): boolean {
   if (method === "POST" && pathname === "/telegram/webhook") {
@@ -448,7 +449,9 @@ async function main(): Promise<void> {
       }
     }
 
-    if (request.method === "POST" && pathname === "/api/upload") {
+    if (request.method === "GET" && pathname === "/") {
+      void serveHomePage(response, config, pool);
+    } else if (request.method === "POST" && pathname === "/api/upload") {
       void handleUploadRequest(request, response);
     } else if (request.method === "POST" && pathname === "/chat") {
       handleChatRequest(request, response);
