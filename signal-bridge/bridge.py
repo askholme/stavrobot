@@ -21,6 +21,7 @@ import tomllib
 from datetime import datetime
 
 from markdown_to_signal import convert_markdown
+from signal_to_markdown import convert_signal_to_markdown
 
 # Stored when signal-cli returns a RATE_LIMIT_FAILURE, cleared after a successful
 # challenge submission. Only one pending challenge is tracked at a time.
@@ -459,6 +460,12 @@ def process_signal_event(
 
     message_text: str | None = data_message.get("message")
     log(f"dataMessage keys={list(data_message.keys())}, message_text={message_text!r}")
+
+    if message_text:
+        text_formatting: list[dict] = data_message.get("textFormatting", [])
+        if text_formatting:
+            message_text = convert_signal_to_markdown(message_text, text_formatting)
+            log(f"Converted Signal formatting to Markdown: {message_text!r}")
 
     # Check for audio attachments and forward them to the agent API as base64.
     audio_b64: str | None = None
