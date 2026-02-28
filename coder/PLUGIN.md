@@ -262,6 +262,21 @@ Use a `uv` shebang so dependencies are resolved automatically at runtime:
 
 The script must be executable (`chmod +x run.py`).
 
+## Writing tools in Node.js
+
+In Node.js, read stdin using file descriptor `0`, not the path `"/dev/stdin"`. The plugin-runner spawns tools with socketpair-backed stdio, and opening `/dev/stdin` as a path fails with `ENXIO` because the kernel rejects `open()` on a socket.
+
+```javascript
+#!/usr/bin/env node
+
+const fs = require("fs");
+
+const input = fs.readFileSync(0, "utf-8");
+const params = JSON.parse(input);
+```
+
+The script must be executable (`chmod +x run.js`).
+
 ## Writing tools in other languages
 
 Any executable works — use a shebang line. Node.js and Python are available in the runtime environment. The script must be executable (`chmod +x`).
