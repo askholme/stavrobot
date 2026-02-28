@@ -38,8 +38,6 @@ function buildHtml(config: Config, uptime: string, stats: MessageStats): string 
     { name: "Telegram", enabled: config.telegram !== undefined },
     { name: "WhatsApp", enabled: config.whatsapp !== undefined },
     { name: "STT", enabled: config.stt !== undefined },
-    { name: "Web search", enabled: config.webSearch !== undefined },
-    { name: "Web fetch", enabled: config.webFetch !== undefined },
     { name: "Coder", enabled: config.coder !== undefined },
   ];
 

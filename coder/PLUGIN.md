@@ -32,7 +32,7 @@ When installed, the repository is cloned into `data/plugins/my-plugin/`.
 Every plugin must include a `README.md` at the repository root. The README should contain:
 
 - A summary of what the plugin does and why a user would want to install it.
-- Installation instructions (e.g., the git repo URL to pass to the bot, any required configuration values and how to obtain them).
+- Installation instructions (e.g., "Tell Stavrobot to install <git URL>", or any required configuration values and how to obtain them).
 
 This is the first thing a potential user sees when browsing the repository, so it should be concise and practical.
 

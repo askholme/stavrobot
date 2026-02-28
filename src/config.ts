@@ -19,16 +19,6 @@ export interface SttConfig {
   model: string;
 }
 
-export interface WebSearchConfig {
-  apiKey: string;
-  model: string;
-}
-
-export interface WebFetchConfig {
-  apiKey: string;
-  model: string;
-}
-
 export interface CoderConfig {
   model: string;
 }
@@ -64,8 +54,6 @@ export interface Config {
   baseAgentPrompt: string;
   customPrompt?: string;
   stt?: SttConfig;
-  webSearch?: WebSearchConfig;
-  webFetch?: WebFetchConfig;
   coder?: CoderConfig;
   signal?: SignalConfig;
   telegram?: TelegramConfig;

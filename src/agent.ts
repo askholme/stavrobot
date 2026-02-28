@@ -11,8 +11,6 @@ import { getApiKey } from "./auth.js";
 import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, resolveRecipient, resolveInterlocutorByName, getMainAgentId, loadAgent, type Memory } from "./database.js";
 import type { RoutingResult } from "./queue.js";
 import { reloadScheduler } from "./scheduler.js";
-import { createWebSearchTool } from "./web-search.js";
-import { createWebFetchTool } from "./web-fetch.js";
 import { createManagePluginsTool, createRunPluginToolTool, createRequestCodingTaskTool } from "./plugin-tools.js";
 import { createRunPythonTool } from "./python.js";
 import { createManagePagesTool } from "./pages.js";
@@ -960,12 +958,6 @@ export function createManageCronTool(pool: pg.Pool): AgentTool {
 export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent> {
   const model = getModel(config.provider as any, config.model as any);
   const tools = [createExecuteSqlTool(pool), createManageKnowledgeTool(pool), createSendSignalMessageTool(pool, config), createManageCronTool(pool), createRunPythonTool(), createManagePagesTool(pool), createManageUploadsTool(), createSearchTool(pool), createManageFilesTool(), createManageInterlocutorsTool(pool), createManageAgentsTool(pool), createSendAgentMessageTool(pool, () => currentAgentId)];
-  if (config.webSearch !== undefined) {
-    tools.push(createWebSearchTool(config.webSearch));
-  }
-  if (config.webFetch !== undefined) {
-    tools.push(createWebFetchTool(config.webFetch));
-  }
   tools.push(
     createManagePluginsTool({ coderEnabled: config.coder !== undefined }),
     createRunPluginToolTool(),

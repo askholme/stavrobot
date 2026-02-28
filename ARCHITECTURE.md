@@ -4,7 +4,7 @@ This document describes the architecture of Stavrobot, a single-user personal AI
 
 ## System overview
 
-Stavrobot is an LLM-powered personal assistant that runs as a set of Docker containers. The owner interacts with it via a CLI client, Signal, Telegram, or WhatsApp. The main agent can create subagents, each with their own conversation history, system prompt, and tool whitelist. Interlocutors are contact records that can be assigned to agents for inbound message routing. The LLM agent (Anthropic Claude) has access to a PostgreSQL database, a plugin system, sandboxed Python execution, web search/fetch, cron scheduling, speech-to-text, and a self-programming subsystem that can create new tools at runtime.
+Stavrobot is an LLM-powered personal assistant that runs as a set of Docker containers. The owner interacts with it via a CLI client, Signal, Telegram, or WhatsApp. The main agent can create subagents, each with their own conversation history, system prompt, and tool whitelist. Interlocutors are contact records that can be assigned to agents for inbound message routing. The LLM agent (Anthropic Claude) has access to a PostgreSQL database, a plugin system, sandboxed Python execution, cron scheduling, speech-to-text, and a self-programming subsystem that can create new tools at runtime.
 
 All messages flow through a single `POST /chat` endpoint on the main app. The agent processes one message at a time via an in-memory queue.
 
@@ -378,8 +378,6 @@ The agent has access to these tools, conditionally enabled based on configuratio
 Subagents only see the tools in their `allowed_tools` whitelist plus `send_agent_message`. The main agent always sees the full tool set.
 
 **Conditionally available:**
-- `web_search` — Search the web via Anthropic's server-side web search tool (requires `[webSearch]` config).
-- `web_fetch` — Fetch a URL and process its content with an LLM (requires `[webFetch]` config).
 - `send_telegram_message` — Send text or attachments via Telegram. Accepts display names as recipients (requires `[telegram]` config).
 - `send_whatsapp_message` — Send text or attachments via WhatsApp. Accepts display names as recipients (requires `[whatsapp]` config).
 - `request_coding_task` — Send coding tasks to the coder agent (requires `[coder]` config).
@@ -566,8 +564,6 @@ src/
   plugins.ts            — Plugin management web UI and proxy endpoints.
   plugin-tools.ts       — Agent tools for plugin management and execution.
   python.ts             — Agent tool for sandboxed Python execution.
-  web-search.ts         — Agent tool for web search via Anthropic API.
-  web-fetch.ts          — Agent tool for URL fetching and LLM analysis.
   stt.ts                — Speech-to-text via OpenAI API with audio format conversion.
   pages.ts              — Agent tool for page management.
   uploads.ts            — File upload handling and storage.
