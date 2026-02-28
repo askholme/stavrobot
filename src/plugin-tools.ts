@@ -19,19 +19,55 @@ interface PluginRunResult {
   error?: string;
 }
 
-interface PluginInitResponse {
-  init_output?: string;
-  [key: string]: unknown;
-}
-
 function isPluginRunResult(value: unknown): value is PluginRunResult {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
   return typeof obj["success"] === "boolean";
 }
 
-function isPluginInitResponse(value: unknown): value is PluginInitResponse {
-  return typeof value === "object" && value !== null;
+// Formats any plugin-runner management response for the agent. Responses with a
+// "message" field (install, update, remove, configure, create) are extracted and
+// optionally augmented with init_output and warnings. Responses without a "message"
+// field (list, show) are TOON-encoded. Falls back to raw text if parsing or encoding
+// fails, because message delivery matters more than formatting.
+function formatPluginRunnerResponse(responseText: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(responseText) as unknown;
+  } catch {
+    return responseText;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    return responseText;
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  if (typeof obj["message"] === "string") {
+    let result = obj["message"];
+
+    if (typeof obj["init_output"] === "string") {
+      result += `\n\nInit script output:\n\`\`\`\n${obj["init_output"]}\n\`\`\``;
+    }
+
+    if (Array.isArray(obj["warnings"]) && obj["warnings"].length > 0) {
+      const warnings = (obj["warnings"] as unknown[])
+        .filter((w): w is string => typeof w === "string")
+        .join("\n");
+      if (warnings.length > 0) {
+        result += `\n\nWarnings:\n${warnings}`;
+      }
+    }
+
+    return result;
+  }
+
+  try {
+    return encodeToToon(parsed);
+  } catch {
+    return responseText;
+  }
 }
 
 function formatRunPluginToolResult(pluginName: string, toolName: string, responseText: string, statusCode: number): string {
@@ -57,30 +93,6 @@ function formatRunPluginToolResult(pluginName: string, toolName: string, respons
     const error = parsed.error ?? "Unknown error";
     return `The run of tool "${toolName}" (plugin "${pluginName}") failed:\n\`\`\`\n${error}\n\`\`\``;
   }
-}
-
-// Parse the install/update response JSON and return a human-readable string.
-// The plugin-runner always includes a "message" field; if "init_output" is also
-// present, it is appended in a fenced code block so the LLM can see the output.
-function formatInitResponse(responseText: string): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(responseText) as unknown;
-  } catch {
-    return responseText;
-  }
-
-  if (!isPluginInitResponse(parsed)) {
-    return responseText;
-  }
-
-  const message = typeof parsed["message"] === "string" ? parsed["message"] : responseText;
-
-  if (typeof parsed.init_output === "string") {
-    return `${message}\n\nInit script output:\n\`\`\`\n${parsed.init_output}\n\`\`\``;
-  }
-
-  return message;
 }
 
 const MANAGE_PLUGINS_HELP_TEXT = `manage_plugins: install, update, remove, configure, list, show, or create plugins.
@@ -156,7 +168,7 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
         });
         const responseText = await response.text();
         console.log("[stavrobot] manage_plugins install result:", responseText.length, "characters");
-        const result = formatInitResponse(responseText);
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -180,7 +192,7 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
         });
         const responseText = await response.text();
         console.log("[stavrobot] manage_plugins update result:", responseText.length, "characters");
-        const result = formatInitResponse(responseText);
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -202,8 +214,9 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
         });
-        const result = await response.text();
-        console.log("[stavrobot] manage_plugins remove result:", result.length, "characters");
+        const responseText = await response.text();
+        console.log("[stavrobot] manage_plugins remove result:", responseText.length, "characters");
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -243,8 +256,9 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, config: parsedConfig }),
         });
-        const result = await response.text();
-        console.log("[stavrobot] manage_plugins configure result:", result.length, "characters");
+        const responseText = await response.text();
+        console.log("[stavrobot] manage_plugins configure result:", responseText.length, "characters");
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -254,8 +268,9 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
       if (action === "list") {
         console.log("[stavrobot] manage_plugins list called");
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles`);
-        const result = await response.text();
-        console.log("[stavrobot] manage_plugins list result:", result.length, "characters");
+        const responseText = await response.text();
+        console.log("[stavrobot] manage_plugins list result:", responseText.length, "characters");
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -280,8 +295,9 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
             details: { result },
           };
         }
-        const result = await response.text();
-        console.log("[stavrobot] manage_plugins show result:", result.length, "characters");
+        const responseText = await response.text();
+        console.log("[stavrobot] manage_plugins show result:", responseText.length, "characters");
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -318,8 +334,9 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, description }),
         });
-        const result = await response.text();
-        console.log("[stavrobot] manage_plugins create result:", result.length, "characters");
+        const responseText = await response.text();
+        console.log("[stavrobot] manage_plugins create result:", responseText.length, "characters");
+        const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },

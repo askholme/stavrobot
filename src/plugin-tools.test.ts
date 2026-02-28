@@ -174,12 +174,11 @@ describe("createManagePluginsTool", () => {
       expect(text).toBe("not json");
     });
 
-    it("falls back to raw text when JSON has no message field", async () => {
-      const raw = JSON.stringify({ name: "myplugin" });
-      mockFetch(200, raw);
+    it("TOON-encodes the response when JSON has no message field", async () => {
+      mockFetch(200, JSON.stringify({ name: "myplugin" }));
       const result = await tool.execute("call-4", { action: "install", url: "https://example.com/plugin.git" });
       const text = (result.content[0] as { type: string; text: string }).text;
-      expect(text).toBe(raw);
+      expect(text).toBe("name: myplugin");
     });
 
     it("returns an error when url is missing", async () => {
@@ -218,13 +217,12 @@ describe("createManagePluginsTool", () => {
   });
 
   describe("create action", () => {
-    it("calls POST /create with the correct body and returns the response text when coder is enabled", async () => {
+    it("calls POST /create with the correct body and returns the message field", async () => {
       const tool = createManagePluginsTool({ coderEnabled: true });
-      const responseBody = JSON.stringify({ name: "myplugin", message: "Plugin 'myplugin' created." });
-      mockFetch(200, responseBody);
+      mockFetch(200, JSON.stringify({ name: "myplugin", message: "Plugin 'myplugin' created." }));
       const result = await tool.execute("call-1", { action: "create", name: "myplugin", plugin_description: "A test plugin." });
       const text = (result.content[0] as { type: string; text: string }).text;
-      expect(text).toBe(responseBody);
+      expect(text).toBe("Plugin 'myplugin' created.");
       const fetchMock = vi.mocked(globalThis.fetch);
       expect(fetchMock).toHaveBeenCalledWith(
         "http://plugin-runner:3003/create",
@@ -254,6 +252,113 @@ describe("createManagePluginsTool", () => {
       const result = await tool.execute("call-4", { action: "create", name: "myplugin" });
       const text = (result.content[0] as { type: string; text: string }).text;
       expect(text).toBe("Error: plugin_description is required for create.");
+    });
+  });
+
+  describe("list action", () => {
+    const tool = createManagePluginsTool({ coderEnabled: false });
+
+    it("TOON-encodes the plugin list response", async () => {
+      mockFetch(200, JSON.stringify([{ name: "plugin1" }, { name: "plugin2" }]));
+      const result = await tool.execute("call-1", { action: "list" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      // TOON format uses column headers like {name} rather than JSON object syntax.
+      expect(text).not.toContain('{"name"');
+      expect(text).toContain("plugin1");
+      expect(text).toContain("plugin2");
+    });
+
+    it("falls back to raw text when response is not valid JSON", async () => {
+      mockFetch(200, "not json");
+      const result = await tool.execute("call-2", { action: "list" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("not json");
+    });
+  });
+
+  describe("show action", () => {
+    const tool = createManagePluginsTool({ coderEnabled: false });
+
+    it("TOON-encodes the plugin manifest response", async () => {
+      mockFetch(200, JSON.stringify({ name: "myplugin", tools: ["tool1"] }));
+      const result = await tool.execute("call-1", { action: "show", name: "myplugin" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).not.toContain("{");
+      expect(text).toContain("myplugin");
+    });
+
+    it("returns an error when name is missing", async () => {
+      const result = await tool.execute("call-2", { action: "show" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Error: name is required for show.");
+    });
+  });
+
+  describe("remove action", () => {
+    const tool = createManagePluginsTool({ coderEnabled: false });
+
+    it("returns the message field from the response JSON", async () => {
+      mockFetch(200, JSON.stringify({ message: "Plugin 'myplugin' removed." }));
+      const result = await tool.execute("call-1", { action: "remove", name: "myplugin" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Plugin 'myplugin' removed.");
+    });
+
+    it("falls back to raw text when response is not valid JSON", async () => {
+      mockFetch(200, "not json");
+      const result = await tool.execute("call-2", { action: "remove", name: "myplugin" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("not json");
+    });
+
+    it("returns an error when name is missing", async () => {
+      const result = await tool.execute("call-3", { action: "remove" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Error: name is required for remove.");
+    });
+  });
+
+  describe("configure action", () => {
+    const tool = createManagePluginsTool({ coderEnabled: false });
+
+    it("returns the message field from the response JSON", async () => {
+      mockFetch(200, JSON.stringify({ message: "Plugin 'myplugin' configured." }));
+      const result = await tool.execute("call-1", { action: "configure", name: "myplugin", config: '{"key":"value"}' });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Plugin 'myplugin' configured.");
+    });
+
+    it("appends warnings when present and non-empty", async () => {
+      mockFetch(200, JSON.stringify({ message: "Plugin 'myplugin' configured.", warnings: ["Unknown key: foo"] }));
+      const result = await tool.execute("call-2", { action: "configure", name: "myplugin", config: '{"key":"value"}' });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Plugin 'myplugin' configured.\n\nWarnings:\nUnknown key: foo");
+    });
+
+    it("does not append warnings when warnings array is empty", async () => {
+      mockFetch(200, JSON.stringify({ message: "Plugin 'myplugin' configured.", warnings: [] }));
+      const result = await tool.execute("call-3", { action: "configure", name: "myplugin", config: '{"key":"value"}' });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Plugin 'myplugin' configured.");
+    });
+
+    it("falls back to raw text when response is not valid JSON", async () => {
+      mockFetch(200, "not json");
+      const result = await tool.execute("call-4", { action: "configure", name: "myplugin", config: '{"key":"value"}' });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("not json");
+    });
+
+    it("returns an error when name is missing", async () => {
+      const result = await tool.execute("call-5", { action: "configure", config: '{"key":"value"}' });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Error: name is required for configure.");
+    });
+
+    it("returns an error when config is missing", async () => {
+      const result = await tool.execute("call-6", { action: "configure", name: "myplugin" });
+      const text = (result.content[0] as { type: string; text: string }).text;
+      expect(text).toBe("Error: config is required for configure.");
     });
   });
 });

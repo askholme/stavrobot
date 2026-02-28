@@ -824,6 +824,6 @@ export async function executeSql(pool: pg.Pool, sql: string): Promise<string> {
   if (result.command === "SELECT") {
     return encodeToToon(result.rows);
   } else {
-    return JSON.stringify({ rowCount: result.rowCount });
+    return encodeToToon({ rowCount: result.rowCount });
   }
 }
