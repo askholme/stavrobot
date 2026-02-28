@@ -88,6 +88,17 @@ describe("loadAllowlist — malformed file", () => {
     expect(() => loadAllowlist(makeConfig())).toThrow("'telegram' must be an array of numbers");
   });
 
+  it("accepts '*' as a valid telegram entry without throwing", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ signal: [], telegram: ["*"] }));
+    mockWriteFileSync.mockImplementation(() => undefined);
+
+    const { loadAllowlist } = await import("./allowlist.js");
+    const allowlist = loadAllowlist(makeConfig());
+
+    expect(allowlist.telegram).toEqual(["*"]);
+  });
+
   it("throws when signal is not an array", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ signal: "+1111111111", telegram: [] }));
@@ -381,6 +392,42 @@ describe("isInAllowlist", () => {
     loadAllowlist(makeConfig());
 
     expect(isInAllowlist("telegram", "42.5")).toBe(false);
+  });
+
+  it("returns true for any signal identifier when the allowlist contains '*'", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ signal: ["*"], telegram: [] }));
+    mockWriteFileSync.mockImplementation(() => undefined);
+
+    const { loadAllowlist, isInAllowlist } = await import("./allowlist.js");
+    loadAllowlist(makeConfig());
+
+    expect(isInAllowlist("signal", "+1111111111")).toBe(true);
+    expect(isInAllowlist("signal", "+9999999999")).toBe(true);
+  });
+
+  it("returns true for any telegram identifier when the allowlist contains '*'", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ signal: [], telegram: ["*"] }));
+    mockWriteFileSync.mockImplementation(() => undefined);
+
+    const { loadAllowlist, isInAllowlist } = await import("./allowlist.js");
+    loadAllowlist(makeConfig());
+
+    expect(isInAllowlist("telegram", "42")).toBe(true);
+    expect(isInAllowlist("telegram", "99999")).toBe(true);
+  });
+
+  it("returns true for any whatsapp identifier when the allowlist contains '*'", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ signal: [], telegram: [], whatsapp: ["*"] }));
+    mockWriteFileSync.mockImplementation(() => undefined);
+
+    const { loadAllowlist, isInAllowlist } = await import("./allowlist.js");
+    loadAllowlist(makeConfig());
+
+    expect(isInAllowlist("whatsapp", "+1111111111")).toBe(true);
+    expect(isInAllowlist("whatsapp", "+9999999999")).toBe(true);
   });
 });
 

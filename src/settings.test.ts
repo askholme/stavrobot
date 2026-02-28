@@ -420,6 +420,65 @@ describe("handlePutAllowlistRequest", () => {
     expect(saved.whatsapp).toContain("+8888888888");
     expect(saved.whatsapp).toContain("+1111111111");
   });
+
+  it("accepts '*' as a valid signal entry and saves it", async () => {
+    mockGetAllowlist.mockReturnValue({ signal: [], telegram: [], whatsapp: [] });
+    mockGetOwnerIdentities.mockReturnValue({ signal: [], telegram: [], whatsapp: [] });
+    mockSaveAllowlist.mockImplementation(() => undefined);
+
+    const body = JSON.stringify({ signal: ["*"], telegram: [], whatsapp: [] });
+    const request = makeMockRequest(body);
+    const response = makeMockResponse();
+
+    await handlePutAllowlistRequest(request, response as unknown as http.ServerResponse, makeConfig());
+
+    expect(response.statusCode).toBe(200);
+    const saved = mockSaveAllowlist.mock.calls[0][0];
+    expect(saved.signal).toContain("*");
+  });
+
+  it("accepts '*' as a valid telegram entry and saves it", async () => {
+    mockGetAllowlist.mockReturnValue({ signal: [], telegram: [], whatsapp: [] });
+    mockGetOwnerIdentities.mockReturnValue({ signal: [], telegram: [], whatsapp: [] });
+    mockSaveAllowlist.mockImplementation(() => undefined);
+
+    const body = JSON.stringify({ signal: [], telegram: ["*"], whatsapp: [] });
+    const request = makeMockRequest(body);
+    const response = makeMockResponse();
+
+    await handlePutAllowlistRequest(request, response as unknown as http.ServerResponse, makeConfig());
+
+    expect(response.statusCode).toBe(200);
+    const saved = mockSaveAllowlist.mock.calls[0][0];
+    expect(saved.telegram).toContain("*");
+  });
+
+  it("accepts '*' as a valid whatsapp entry and saves it", async () => {
+    mockGetAllowlist.mockReturnValue({ signal: [], telegram: [], whatsapp: [] });
+    mockGetOwnerIdentities.mockReturnValue({ signal: [], telegram: [], whatsapp: [] });
+    mockSaveAllowlist.mockImplementation(() => undefined);
+
+    const body = JSON.stringify({ signal: [], telegram: [], whatsapp: ["*"] });
+    const request = makeMockRequest(body);
+    const response = makeMockResponse();
+
+    await handlePutAllowlistRequest(request, response as unknown as http.ServerResponse, makeConfig());
+
+    expect(response.statusCode).toBe(200);
+    const saved = mockSaveAllowlist.mock.calls[0][0];
+    expect(saved.whatsapp).toContain("*");
+  });
+
+  it("returns 400 when telegram contains a non-integer string other than '*'", async () => {
+    const request = makeMockRequest(JSON.stringify({ signal: [], telegram: ["notanumber"], whatsapp: [] }));
+    const response = makeMockResponse();
+
+    await handlePutAllowlistRequest(request, response as unknown as http.ServerResponse, makeConfig());
+
+    expect(response.statusCode).toBe(400);
+    const parsed = JSON.parse(response.body!);
+    expect(parsed.error).toMatch(/telegram/i);
+  });
 });
 
 describe("serveAllowlistPage", () => {

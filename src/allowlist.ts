@@ -3,7 +3,7 @@ import type { Config } from "./config.js";
 
 export interface Allowlist {
   signal: string[];
-  telegram: number[];
+  telegram: (number | string)[];
   whatsapp: string[];
 }
 
@@ -19,7 +19,10 @@ function validateAllowlist(value: unknown): Allowlist {
   if (!Array.isArray(obj.signal) || !obj.signal.every((item) => typeof item === "string")) {
     throw new Error("allowlist.json: 'signal' must be an array of strings");
   }
-  if (!Array.isArray(obj.telegram) || !obj.telegram.every((item) => typeof item === "number")) {
+  if (
+    !Array.isArray(obj.telegram) ||
+    !obj.telegram.every((item) => typeof item === "number" || item === "*")
+  ) {
     throw new Error("allowlist.json: 'telegram' must be an array of numbers");
   }
   // The whatsapp field is optional to avoid breaking existing deployments that
@@ -28,7 +31,7 @@ function validateAllowlist(value: unknown): Allowlist {
   if (!Array.isArray(whatsapp) || !whatsapp.every((item) => typeof item === "string")) {
     throw new Error("allowlist.json: 'whatsapp' must be an array of strings");
   }
-  return { signal: obj.signal as string[], telegram: obj.telegram as number[], whatsapp: whatsapp as string[] };
+  return { signal: obj.signal as string[], telegram: obj.telegram as (number | string)[], whatsapp: whatsapp as string[] };
 }
 
 export function loadAllowlist(config: Config): Allowlist {
@@ -93,9 +96,15 @@ export function getAllowlist(): Allowlist {
 
 export function isInAllowlist(service: string, identifier: string): boolean {
   if (service === "signal") {
+    if (currentAllowlist.signal.includes("*")) {
+      return true;
+    }
     return currentAllowlist.signal.includes(identifier);
   }
   if (service === "telegram") {
+    if (currentAllowlist.telegram.includes("*")) {
+      return true;
+    }
     const chatId = Number(identifier);
     if (!Number.isInteger(chatId)) {
       return false;
@@ -103,6 +112,9 @@ export function isInAllowlist(service: string, identifier: string): boolean {
     return currentAllowlist.telegram.includes(chatId);
   }
   if (service === "whatsapp") {
+    if (currentAllowlist.whatsapp.includes("*")) {
+      return true;
+    }
     return currentAllowlist.whatsapp.includes(identifier);
   }
   return false;

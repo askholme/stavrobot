@@ -61,7 +61,7 @@ export async function handlePutAllowlistRequest(
   }
 
   const e164Pattern = /^\+[1-9]\d{1,14}$/;
-  const invalidSignal = trimmedSignal.find((item) => !e164Pattern.test(item));
+  const invalidSignal = trimmedSignal.find((item) => item !== "*" && !e164Pattern.test(item));
   if (invalidSignal !== undefined) {
     response.writeHead(400, { "Content-Type": "application/json" });
     response.end(
@@ -74,7 +74,7 @@ export async function handlePutAllowlistRequest(
 
   if (
     !Array.isArray(obj.telegram) ||
-    !obj.telegram.every((item) => typeof item === "number" && Number.isInteger(item))
+    !obj.telegram.every((item) => item === "*" || (typeof item === "number" && Number.isInteger(item)))
   ) {
     response.writeHead(400, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: "'telegram' must be an array of integers" }));
@@ -94,7 +94,7 @@ export async function handlePutAllowlistRequest(
     return;
   }
 
-  const invalidWhatsapp = trimmedWhatsapp.find((item) => !e164Pattern.test(item));
+  const invalidWhatsapp = trimmedWhatsapp.find((item) => item !== "*" && !e164Pattern.test(item));
   if (invalidWhatsapp !== undefined) {
     response.writeHead(400, { "Content-Type": "application/json" });
     response.end(
@@ -107,7 +107,7 @@ export async function handlePutAllowlistRequest(
 
   const submitted: Allowlist = {
     signal: [...new Set(trimmedSignal)],
-    telegram: [...new Set(obj.telegram as number[])],
+    telegram: [...new Set(obj.telegram as (number | string)[])],
     whatsapp: [...new Set(trimmedWhatsapp)],
   };
 
