@@ -50,8 +50,6 @@ export function createManagePagesTool(pool: pg.Pool): AgentTool {
 
       const action = raw.action;
 
-      console.log(`[stavrobot] manage_pages called: action=${action} path=${raw.path}`);
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: MANAGE_PAGES_HELP_TEXT }],
@@ -70,8 +68,6 @@ export function createManagePagesTool(pool: pg.Pool): AgentTool {
 
         const message = await upsertPage(pool, raw.path, raw.mimetype, raw.content, raw.is_public, raw.queries);
 
-        console.log("[stavrobot] manage_pages upsert result:", message);
-
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },
@@ -89,8 +85,6 @@ export function createManagePagesTool(pool: pg.Pool): AgentTool {
 
         const deleted = await deletePage(pool, raw.path);
         const message = deleted ? `Page deleted: ${raw.path}` : `Page not found: ${raw.path}`;
-
-        console.log("[stavrobot] manage_pages delete result:", message);
 
         return {
           content: [{ type: "text" as const, text: message }],

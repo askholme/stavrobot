@@ -3,6 +3,7 @@ import path from "node:path";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import { log } from "./log.js";
 
 const FILES_DIR = path.join(TEMP_ATTACHMENTS_DIR, "files");
 
@@ -58,8 +59,6 @@ export function createManageFilesTool(): AgentTool {
 
       const action = raw.action;
 
-      console.log(`[stavrobot] manage_files called: action=${action} filename=${raw.filename}`);
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: HELP_TEXT }],
@@ -80,7 +79,7 @@ export function createManageFilesTool(): AgentTool {
         }
         const absolutePaths = filenames.map((name) => path.join(FILES_DIR, name));
         const result = absolutePaths.join("\n");
-        console.log(`[stavrobot] manage_files list: ${filenames.length} file(s)`);
+        log.debug(`[stavrobot] manage_files list: ${filenames.length} file(s)`);
         return {
           content: [{ type: "text" as const, text: result }],
           details: { result },
@@ -121,7 +120,7 @@ export function createManageFilesTool(): AgentTool {
           await fs.writeFile(filePath, raw.content, "utf-8");
         }
 
-        console.log(`[stavrobot] manage_files write: ${filePath}`);
+        log.debug(`[stavrobot] manage_files write: ${filePath}`);
         return {
           content: [{ type: "text" as const, text: filePath }],
           details: { result: filePath },
@@ -146,7 +145,7 @@ export function createManageFilesTool(): AgentTool {
 
         const filePath = path.join(FILES_DIR, raw.filename);
         const fileContent = await fs.readFile(filePath, "utf-8");
-        console.log(`[stavrobot] manage_files read: ${filePath} (${fileContent.length} chars)`);
+        log.debug(`[stavrobot] manage_files read: ${filePath} (${fileContent.length} chars)`);
         return {
           content: [{ type: "text" as const, text: fileContent }],
           details: { result: fileContent },
@@ -172,7 +171,7 @@ export function createManageFilesTool(): AgentTool {
         const filePath = path.join(FILES_DIR, raw.filename);
         await fs.unlink(filePath);
         const successMessage = `File deleted: ${filePath}`;
-        console.log(`[stavrobot] manage_files delete: ${filePath}`);
+        log.debug(`[stavrobot] manage_files delete: ${filePath}`);
         return {
           content: [{ type: "text" as const, text: successMessage }],
           details: { result: successMessage },

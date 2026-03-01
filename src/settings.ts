@@ -2,6 +2,7 @@ import http from "http";
 import type { Config } from "./config.js";
 import { getAllowlist, saveAllowlist, getOwnerIdentities } from "./allowlist.js";
 import type { Allowlist } from "./allowlist.js";
+import { log } from "./log.js";
 
 async function readRequestBody(request: http.IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -15,7 +16,7 @@ export function handleGetAllowlistRequest(
   response: http.ServerResponse,
   config: Config,
 ): void {
-  console.log("[stavrobot] handleGetAllowlistRequest: returning allowlist and owner identities");
+  log.debug("[stavrobot] handleGetAllowlistRequest: returning allowlist and owner identities");
   const allowlist = getAllowlist();
   const ownerIdentities = getOwnerIdentities(config);
   response.writeHead(200, { "Content-Type": "application/json" });
@@ -130,7 +131,7 @@ export async function handlePutAllowlistRequest(
   }
 
   saveAllowlist(submitted);
-  console.log("[stavrobot] handlePutAllowlistRequest: allowlist saved", submitted);
+  log.debug("[stavrobot] handlePutAllowlistRequest: allowlist saved", submitted);
 
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify({ allowlist: submitted, ownerIdentities }));

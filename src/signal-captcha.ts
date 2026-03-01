@@ -1,4 +1,5 @@
 import http from "http";
+import { log } from "./log.js";
 
 const SIGNAL_CAPTCHA_PAGE_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -164,7 +165,7 @@ const SIGNAL_CAPTCHA_PAGE_HTML = `<!DOCTYPE html>
 </html>`;
 
 export function serveSignalCaptchaPage(response: http.ServerResponse): void {
-  console.log("[stavrobot] serveSignalCaptchaPage: serving captcha page");
+  log.debug("[stavrobot] serveSignalCaptchaPage: serving captcha page");
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   response.end(SIGNAL_CAPTCHA_PAGE_HTML);
 }
@@ -201,7 +202,7 @@ export async function handleSignalCaptchaSubmit(
     return;
   }
 
-  console.log("[stavrobot] handleSignalCaptchaSubmit: proxying captcha to signal-bridge");
+  log.debug("[stavrobot] handleSignalCaptchaSubmit: proxying captcha to signal-bridge");
 
   const bridgeResponse = await fetch("http://signal-bridge:8081/challenge", {
     method: "POST",
@@ -210,7 +211,7 @@ export async function handleSignalCaptchaSubmit(
   });
 
   const bridgeText = await bridgeResponse.text();
-  console.log("[stavrobot] handleSignalCaptchaSubmit: bridge response status:", bridgeResponse.status);
+  log.debug("[stavrobot] handleSignalCaptchaSubmit: bridge response status:", bridgeResponse.status);
 
   response.writeHead(bridgeResponse.status, { "Content-Type": "application/json" });
   // Forward the bridge response body as-is if it is valid JSON, otherwise wrap it.

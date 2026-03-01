@@ -4,6 +4,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { encodeToToon } from "./toon.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import { log } from "./log.js";
 
 const PLUGIN_RUNNER_BASE_URL = "http://plugin-runner:3003";
 const CLAUDE_CODE_BASE_URL = "http://coder:3002";
@@ -142,8 +143,6 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
 
       const action = raw.action;
 
-      console.log(`[stavrobot] manage_plugins called: action=${action} name=${raw.name}`);
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: MANAGE_PLUGINS_HELP_TEXT }],
@@ -160,14 +159,12 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           };
         }
         const url = raw.url;
-        console.log("[stavrobot] manage_plugins install called:", url);
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url }),
         });
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins install result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -184,14 +181,12 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           };
         }
         const name = raw.name;
-        console.log("[stavrobot] manage_plugins update called:", name);
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/update`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
         });
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins update result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -208,14 +203,12 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           };
         }
         const name = raw.name;
-        console.log("[stavrobot] manage_plugins remove called:", name);
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/remove`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
         });
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins remove result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -240,7 +233,6 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
         }
         const name = raw.name;
         const config = raw.config;
-        console.log("[stavrobot] manage_plugins configure called: name:", name, "config:", config);
         let parsedConfig: unknown;
         try {
           parsedConfig = JSON.parse(config);
@@ -257,7 +249,6 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           body: JSON.stringify({ name, config: parsedConfig }),
         });
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins configure result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -266,10 +257,8 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
       }
 
       if (action === "list") {
-        console.log("[stavrobot] manage_plugins list called");
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles`);
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins list result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -286,7 +275,6 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           };
         }
         const name = raw.name;
-        console.log("[stavrobot] manage_plugins show called:", name);
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles/${name}`);
         if (response.status === 404) {
           const result = `Plugin '${name}' not found.`;
@@ -296,7 +284,6 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
           };
         }
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins show result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -328,14 +315,12 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
         }
         const name = raw.name;
         const description = raw.plugin_description;
-        console.log("[stavrobot] manage_plugins create called: name:", name);
         const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/create`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name, description }),
         });
         const responseText = await response.text();
-        console.log("[stavrobot] manage_plugins create result:", responseText.length, "characters");
         const result = formatPluginRunnerResponse(responseText);
         return {
           content: [{ type: "text" as const, text: result }],
@@ -367,7 +352,6 @@ export function createRunPluginToolTool(): AgentTool {
       params: unknown,
     ): Promise<AgentToolResult<{ result: string }>> => {
       const { plugin, tool, parameters } = params as { plugin: string; tool: string; parameters: string };
-      console.log("[stavrobot] run_plugin_tool called: plugin:", plugin, "tool:", tool, "parameters:", parameters);
       const parsedParameters = JSON.parse(parameters) as unknown;
 
       const pluginFilesDir = path.join(TEMP_ATTACHMENTS_DIR, plugin);
@@ -380,7 +364,6 @@ export function createRunPluginToolTool(): AgentTool {
         body: JSON.stringify(parsedParameters),
       });
       const responseText = await response.text();
-      console.log("[stavrobot] run_plugin_tool result:", responseText.length, "characters");
       let result = formatRunPluginToolResult(plugin, tool, responseText, response.status);
 
       let filesDir: string | undefined;
@@ -407,7 +390,7 @@ export function createRunPluginToolTool(): AgentTool {
               await fs.writeFile(filePath, Buffer.from(file.data, "base64"));
             }
             filesDir = pluginFilesDir;
-            console.log(`[stavrobot] run_plugin_tool: saved ${validFiles.length} file(s) to ${pluginFilesDir}`);
+            log.debug(`[stavrobot] run_plugin_tool: saved ${validFiles.length} file(s) to ${pluginFilesDir}`);
           }
         }
       } catch {
@@ -444,7 +427,6 @@ export function createRequestCodingTaskTool(): AgentTool {
       params: unknown,
     ): Promise<AgentToolResult<{ result: string }>> => {
       const { plugin, message } = params as { plugin: string; message: string };
-      console.log("[stavrobot] request_coding_task called: plugin:", plugin);
 
       const bundleResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles/${plugin}`);
       if (bundleResponse.status === 404) {
@@ -476,14 +458,13 @@ export function createRequestCodingTaskTool(): AgentTool {
       }
 
       const taskId = crypto.randomUUID();
-      console.log("[stavrobot] request_coding_task submitting: taskId", taskId, "plugin:", plugin, "message:", message);
+      log.debug("[stavrobot] request_coding_task submitting: taskId", taskId, "plugin:", plugin, "message:", message);
       await fetch(`${CLAUDE_CODE_BASE_URL}/code`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ taskId, plugin, message }),
       });
       const result = `Coding task ${taskId} submitted for plugin '${plugin}'. The coder agent will respond when done.`;
-      console.log("[stavrobot] request_coding_task submitted:", taskId);
       return {
         content: [{ type: "text" as const, text: result }],
         details: { result },

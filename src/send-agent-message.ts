@@ -3,6 +3,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { loadAgent } from "./database.js";
 import { enqueueMessage } from "./queue.js";
+import { log } from "./log.js";
 
 export function createSendAgentMessageTool(pool: pg.Pool, getCurrentAgentId: () => number): AgentTool {
   return {
@@ -25,8 +26,6 @@ export function createSendAgentMessageTool(pool: pg.Pool, getCurrentAgentId: () 
       const { agent_id: agentId, message } = raw;
       const senderAgentId = getCurrentAgentId();
 
-      console.log(`[stavrobot] send_agent_message called: from=${senderAgentId} to=${agentId}`);
-
       const targetAgent = await loadAgent(pool, agentId);
       if (targetAgent === null) {
         const errorMessage = `Error: agent ${agentId} not found.`;
@@ -39,7 +38,7 @@ export function createSendAgentMessageTool(pool: pg.Pool, getCurrentAgentId: () 
       void enqueueMessage(message, "agent", String(senderAgentId), undefined, undefined, undefined, agentId);
 
       const resultMessage = `Message sent to agent ${agentId}.`;
-      console.log(`[stavrobot] ${resultMessage}`);
+      log.info(`[stavrobot] ${resultMessage}`);
       return {
         content: [{ type: "text" as const, text: resultMessage }],
         details: { message: resultMessage },

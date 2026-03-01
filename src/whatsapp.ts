@@ -12,6 +12,7 @@ import { isInAllowlist } from "./allowlist.js";
 import { enqueueMessage } from "./queue.js";
 import { saveAttachment, type FileAttachment } from "./uploads.js";
 import { setWhatsappSocket, getWhatsappSocket, jidToE164, e164ToJid } from "./whatsapp-api.js";
+import { log } from "./log.js";
 
 // libsignal (used internally by Baileys) has hardcoded console.info and console.warn
 // calls in session_record.js and session_builder.js that bypass the pino-compatible
@@ -72,10 +73,10 @@ const silentLogger: SilentLogger = {
   debug(_obj: unknown, _msg?: string): void {},
   info(_obj: unknown, _msg?: string): void {},
   warn(obj: unknown, msg?: string): void {
-    console.warn("[stavrobot] [whatsapp] warn:", msg ?? obj);
+    log.warn("[stavrobot] [whatsapp] warn:", msg ?? obj);
   },
   error(obj: unknown, msg?: string): void {
-    console.error("[stavrobot] [whatsapp] error:", msg ?? obj);
+    log.error("[stavrobot] [whatsapp] error:", msg ?? obj);
   },
 };
 
@@ -86,7 +87,7 @@ let reconnectAttempt = 0;
 export async function initializeWhatsApp(config: WhatsappConfig): Promise<void> {
   const authDir = process.env.WHATSAPP_AUTH_DIR ?? "data/whatsapp";
 
-  console.log("[stavrobot] Initializing WhatsApp connection, auth dir:", authDir);
+  log.info("[stavrobot] Initializing WhatsApp connection, auth dir:", authDir);
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
@@ -111,30 +112,30 @@ export async function initializeWhatsApp(config: WhatsappConfig): Promise<void> 
     const { connection, lastDisconnect, qr } = update;
 
     if (qr !== undefined) {
-      console.log("[stavrobot] Scan this QR code with WhatsApp to link this device:");
+      log.info("[stavrobot] Scan this QR code with WhatsApp to link this device:");
       qrcodeTerminal.generate(qr, { small: true });
     }
 
     if (connection === "open") {
-      console.log("[stavrobot] WhatsApp connection established.");
+      log.info("[stavrobot] WhatsApp connection established.");
       reconnectAttempt = 0;
     }
 
     if (connection === "close") {
       const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
       if (statusCode === DisconnectReason.loggedOut) {
-        console.error("[stavrobot] WhatsApp logged out (401). Remove the auth directory and restart to re-link.");
+        log.error("[stavrobot] WhatsApp logged out (401). Remove the auth directory and restart to re-link.");
         setWhatsappSocket(undefined);
         return;
       }
 
       if (statusCode === 405) {
-        console.error("[stavrobot] WhatsApp rejected the connection with 405. The protocol version may be outdated.");
+        log.error("[stavrobot] WhatsApp rejected the connection with 405. The protocol version may be outdated.");
       }
 
       reconnectAttempt++;
       if (reconnectAttempt > MAX_RECONNECT_ATTEMPTS) {
-        console.error(
+        log.error(
           `[stavrobot] WhatsApp reconnect failed after ${MAX_RECONNECT_ATTEMPTS} attempts. Giving up.`,
         );
         setWhatsappSocket(undefined);
@@ -142,7 +143,7 @@ export async function initializeWhatsApp(config: WhatsappConfig): Promise<void> 
       }
 
       const delayMs = Math.min(2 ** (reconnectAttempt - 1) * 1000, 60000);
-      console.log(
+      log.info(
         `[stavrobot] WhatsApp connection closed (status: ${statusCode}), reconnecting in ${delayMs}ms (attempt ${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS}).`,
       );
       // Reconnect by re-initializing. Baileys does not auto-reconnect internally
@@ -154,7 +155,7 @@ export async function initializeWhatsApp(config: WhatsappConfig): Promise<void> 
   });
 
   socket.ev.on("messages.upsert", ({ messages, type }) => {
-    console.log(`[stavrobot] WhatsApp messages.upsert: type=${type}, count=${messages.length}`);
+    log.debug(`[stavrobot] WhatsApp messages.upsert: type=${type}, count=${messages.length}`);
     // Only process new incoming messages, not history syncs.
     if (type !== "notify") {
       return;
@@ -168,7 +169,7 @@ export async function initializeWhatsApp(config: WhatsappConfig): Promise<void> 
 
 async function processInboundMessage(waMessage: WAMessage): Promise<void> {
   const remoteJid = waMessage.key.remoteJid;
-  console.log(`[stavrobot] WhatsApp processInboundMessage: fromMe=${waMessage.key.fromMe}, jid=${remoteJid}, hasMessage=${waMessage.message !== undefined && waMessage.message !== null}`);
+  log.debug(`[stavrobot] WhatsApp processInboundMessage: fromMe=${waMessage.key.fromMe}, jid=${remoteJid}, hasMessage=${waMessage.message !== undefined && waMessage.message !== null}`);
 
   if (waMessage.key.fromMe === true) {
     return;
@@ -180,7 +181,7 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
 
   // Ignore group messages and status/broadcast messages.
   if (remoteJid.endsWith("@g.us") || remoteJid === "status@broadcast") {
-    console.log("[stavrobot] WhatsApp ignoring group/broadcast message from:", remoteJid);
+    log.debug("[stavrobot] WhatsApp ignoring group/broadcast message from:", remoteJid);
     return;
   }
 
@@ -188,40 +189,40 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
   if (remoteJid.endsWith("@lid")) {
     const socket = getWhatsappSocket();
     if (socket === undefined) {
-      console.log("[stavrobot] WhatsApp could not resolve LID JID, dropping:", remoteJid);
+      log.debug("[stavrobot] WhatsApp could not resolve LID JID, dropping:", remoteJid);
       return;
     }
     const resolvedJid = await socket.signalRepository.lidMapping.getPNForLID(remoteJid);
     if (resolvedJid === null) {
-      console.log("[stavrobot] WhatsApp could not resolve LID JID, dropping:", remoteJid);
+      log.debug("[stavrobot] WhatsApp could not resolve LID JID, dropping:", remoteJid);
       return;
     }
-    console.log("[stavrobot] WhatsApp resolved LID to PN:", remoteJid, "->", resolvedJid);
+    log.debug("[stavrobot] WhatsApp resolved LID to PN:", remoteJid, "->", resolvedJid);
     effectiveJid = resolvedJid;
   }
 
   if (!effectiveJid.endsWith("@s.whatsapp.net")) {
-    console.log("[stavrobot] WhatsApp ignoring non-individual JID:", effectiveJid);
+    log.debug("[stavrobot] WhatsApp ignoring non-individual JID:", effectiveJid);
     return;
   }
 
   const phoneNumber = jidToE164(effectiveJid);
 
   if (!isInAllowlist("whatsapp", phoneNumber)) {
-    console.log("[stavrobot] WhatsApp message from disallowed number:", phoneNumber);
+    log.info("[stavrobot] WhatsApp message from disallowed number:", phoneNumber);
     return;
   }
 
   const messageContent = waMessage.message;
   if (messageContent === undefined || messageContent === null) {
-    console.log("[stavrobot] WhatsApp message has no content, ignoring. From:", phoneNumber);
+    log.debug("[stavrobot] WhatsApp message has no content, ignoring. From:", phoneNumber);
     return;
   }
 
   // Text message.
   const text = messageContent.conversation ?? messageContent.extendedTextMessage?.text;
   if (text !== undefined && text !== null) {
-    console.log("[stavrobot] WhatsApp text message from:", phoneNumber);
+    log.debug("[stavrobot] WhatsApp text message from:", phoneNumber);
     void enqueueMessage(text, "whatsapp", phoneNumber);
     return;
   }
@@ -230,7 +231,7 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
   if (messageContent.imageMessage !== undefined && messageContent.imageMessage !== null) {
     const caption = messageContent.imageMessage.caption ?? undefined;
     const mimeType = messageContent.imageMessage.mimetype ?? "image/jpeg";
-    console.log("[stavrobot] WhatsApp image message from:", phoneNumber);
+    log.debug("[stavrobot] WhatsApp image message from:", phoneNumber);
     void downloadMediaMessage(waMessage, "buffer", {}).then(async (buffer) => {
       const filename = `whatsapp-image-${Date.now()}.jpg`;
       const { storedPath } = await saveAttachment(buffer as Buffer, filename, mimeType);
@@ -242,7 +243,7 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
       };
       void enqueueMessage(caption, "whatsapp", phoneNumber, undefined, undefined, [attachment]);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading WhatsApp image:", error);
+      log.error("[stavrobot] Error downloading WhatsApp image:", error);
     });
     return;
   }
@@ -251,12 +252,12 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
   if (messageContent.audioMessage !== undefined && messageContent.audioMessage !== null) {
     // WhatsApp voice notes are OGG Opus; regular audio may have a different mime type.
     const audioContentType = messageContent.audioMessage.mimetype ?? "audio/ogg; codecs=opus";
-    console.log("[stavrobot] WhatsApp audio message from:", phoneNumber, "contentType:", audioContentType);
+    log.debug("[stavrobot] WhatsApp audio message from:", phoneNumber, "contentType:", audioContentType);
     void downloadMediaMessage(waMessage, "buffer", {}).then((buffer) => {
       const audioBase64 = (buffer as Buffer).toString("base64");
       void enqueueMessage(undefined, "whatsapp", phoneNumber, audioBase64, audioContentType);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading WhatsApp audio:", error);
+      log.error("[stavrobot] Error downloading WhatsApp audio:", error);
     });
     return;
   }
@@ -266,7 +267,7 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
     const caption = messageContent.documentMessage.caption ?? undefined;
     const mimeType = messageContent.documentMessage.mimetype ?? "application/octet-stream";
     const filename = messageContent.documentMessage.fileName ?? `whatsapp-document-${Date.now()}`;
-    console.log("[stavrobot] WhatsApp document message from:", phoneNumber, "filename:", filename);
+    log.debug("[stavrobot] WhatsApp document message from:", phoneNumber, "filename:", filename);
     void downloadMediaMessage(waMessage, "buffer", {}).then(async (buffer) => {
       const { storedPath } = await saveAttachment(buffer as Buffer, filename, mimeType);
       const attachment: FileAttachment = {
@@ -277,7 +278,7 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
       };
       void enqueueMessage(caption, "whatsapp", phoneNumber, undefined, undefined, [attachment]);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading WhatsApp document:", error);
+      log.error("[stavrobot] Error downloading WhatsApp document:", error);
     });
     return;
   }
@@ -286,7 +287,7 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
   if (messageContent.videoMessage !== undefined && messageContent.videoMessage !== null) {
     const caption = messageContent.videoMessage.caption ?? undefined;
     const mimeType = messageContent.videoMessage.mimetype ?? "video/mp4";
-    console.log("[stavrobot] WhatsApp video message from:", phoneNumber);
+    log.debug("[stavrobot] WhatsApp video message from:", phoneNumber);
     void downloadMediaMessage(waMessage, "buffer", {}).then(async (buffer) => {
       const filename = `whatsapp-video-${Date.now()}.mp4`;
       const { storedPath } = await saveAttachment(buffer as Buffer, filename, mimeType);
@@ -298,10 +299,10 @@ async function processInboundMessage(waMessage: WAMessage): Promise<void> {
       };
       void enqueueMessage(caption, "whatsapp", phoneNumber, undefined, undefined, [attachment]);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading WhatsApp video:", error);
+      log.error("[stavrobot] Error downloading WhatsApp video:", error);
     });
     return;
   }
 
-  console.log("[stavrobot] WhatsApp message has no supported content type, ignoring. From:", phoneNumber);
+  log.debug("[stavrobot] WhatsApp message has no supported content type, ignoring. From:", phoneNumber);
 }

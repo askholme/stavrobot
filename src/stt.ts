@@ -4,6 +4,7 @@ import { writeFile, readFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { SttConfig } from "./config.js";
+import { log } from "./log.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,12 +43,12 @@ async function convertToMp3(audio: Buffer, inputExtension: string): Promise<Buff
 
   try {
     await writeFile(inputPath, audio);
-    console.log("[stavrobot] convertToMp3: running faad on", inputPath);
+    log.debug("[stavrobot] convertToMp3: running faad on", inputPath);
     await execFileAsync("faad", ["-o", wavPath, inputPath]);
-    console.log("[stavrobot] convertToMp3: running lame on", wavPath);
+    log.debug("[stavrobot] convertToMp3: running lame on", wavPath);
     await execFileAsync("lame", ["-V", "2", wavPath, outputPath]);
     const converted = await readFile(outputPath);
-    console.log("[stavrobot] convertToMp3: converted to mp3, size:", converted.byteLength, "bytes");
+    log.debug("[stavrobot] convertToMp3: converted to mp3, size:", converted.byteLength, "bytes");
     return converted;
   } finally {
     await unlink(inputPath).catch(() => undefined);
@@ -57,7 +58,7 @@ async function convertToMp3(audio: Buffer, inputExtension: string): Promise<Buff
 }
 
 export async function transcribeAudio(audio: Buffer, config: SttConfig, contentType: string): Promise<string> {
-  console.log("[stavrobot] transcribeAudio called: audio size", audio.byteLength, "bytes, contentType:", contentType);
+  log.debug("[stavrobot] transcribeAudio called: audio size", audio.byteLength, "bytes, contentType:", contentType);
 
   let audioBuffer = audio;
   let blobFilename: string;
@@ -69,7 +70,7 @@ export async function transcribeAudio(audio: Buffer, config: SttConfig, contentT
     // Strip parameters (e.g. "audio/aac; codecs=...") before using as extension.
     const baseType = contentType.split(";")[0].trim();
     const inputExtension = baseType.split("/")[1] ?? "bin";
-    console.log("[stavrobot] transcribeAudio: unsupported content type", contentType, "- converting to mp3 via faad/lame");
+    log.debug("[stavrobot] transcribeAudio: unsupported content type", contentType, "- converting to mp3 via faad/lame");
     audioBuffer = await convertToMp3(audio, inputExtension);
     blobFilename = "audio.mp3";
   }
@@ -88,14 +89,14 @@ export async function transcribeAudio(audio: Buffer, config: SttConfig, contentT
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error("[stavrobot] transcribeAudio error:", response.status, errorText);
+    log.error("[stavrobot] transcribeAudio error:", response.status, errorText);
     throw new Error(`OpenAI STT API error ${response.status}: ${errorText}`);
   }
 
   const result = await response.json() as unknown;
   const text = (result as { text: string }).text;
 
-  console.log("[stavrobot] transcribeAudio success: transcribed", text.length, "characters");
+  log.debug("[stavrobot] transcribeAudio success: transcribed", text.length, "characters");
 
   return text;
 }

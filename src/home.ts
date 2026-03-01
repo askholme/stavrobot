@@ -1,6 +1,7 @@
 import http from "http";
 import type pg from "pg";
 import type { Config } from "./config.js";
+import { log } from "./log.js";
 
 const startTime = Date.now();
 
@@ -570,7 +571,7 @@ export async function serveHomePage(
   pool: pg.Pool,
 ): Promise<void> {
   try {
-    console.log("[stavrobot] serveHomePage: querying message stats");
+    log.debug("[stavrobot] serveHomePage: querying message stats");
 
     const result = await pool.query<MessageStats>(`
       SELECT
@@ -589,11 +590,11 @@ export async function serveHomePage(
     const uptime = formatUptime(Date.now() - startTime);
     const html = buildHtml(config, uptime, stats);
 
-    console.log("[stavrobot] serveHomePage: serving home page");
+    log.debug("[stavrobot] serveHomePage: serving home page");
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(html);
   } catch (error) {
-    console.error("[stavrobot] Error serving home page:", error);
+    log.error("[stavrobot] Error serving home page:", error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: errorMessage }));

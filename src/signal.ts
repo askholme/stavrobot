@@ -1,5 +1,7 @@
+import { log } from "./log.js";
+
 export async function sendSignalMessage(recipient: string, message: string): Promise<"ok" | "rate_limited"> {
-  console.log("[stavrobot] sendSignalMessage called:", { recipient, messageLength: message.length });
+  log.debug("[stavrobot] sendSignalMessage called:", { recipient, messageLength: message.length });
 
   const response = await fetch("http://signal-bridge:8081/send", {
     method: "POST",
@@ -10,7 +12,7 @@ export async function sendSignalMessage(recipient: string, message: string): Pro
   const responseText = await response.text();
 
   if (response.status === 429) {
-    console.warn("[stavrobot] sendSignalMessage rate limited by bridge");
+    log.warn("[stavrobot] sendSignalMessage rate limited by bridge");
     return "rate_limited";
   }
 
@@ -39,6 +41,6 @@ export async function sendSignalMessage(recipient: string, message: string): Pro
     throw parseError;
   }
 
-  console.log("[stavrobot] sendSignalMessage bridge response status:", response.status);
+  log.debug("[stavrobot] sendSignalMessage bridge response status:", response.status);
   return "ok";
 }

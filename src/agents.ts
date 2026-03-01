@@ -7,6 +7,7 @@ import {
   listAgents,
 } from "./database.js";
 import { encodeToToon } from "./toon.js";
+import { log } from "./log.js";
 
 const HELP_TEXT = `manage_agents tool — full documentation
 
@@ -77,11 +78,6 @@ export function createManageAgentsTool(pool: pg.Pool): AgentTool {
 
       const { action } = raw;
 
-      console.log(`[stavrobot] manage_agents called: action=${action} id=${raw.id}`);
-      if (process.env.STAVROBOT_DEBUG === "1") {
-        console.log(`[stavrobot] [debug] manage_agents: ${JSON.stringify(raw)}`);
-      }
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: HELP_TEXT }],
@@ -108,7 +104,7 @@ export function createManageAgentsTool(pool: pg.Pool): AgentTool {
         const allowedTools = raw.allowed_tools ?? [];
         const newId = await createAgentInDb(pool, raw.name.trim(), raw.system_prompt, allowedTools);
         const message = `Agent ${newId} created.`;
-        console.log(`[stavrobot] ${message}`);
+        log.info(`[stavrobot] ${message}`);
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },
@@ -152,7 +148,7 @@ export function createManageAgentsTool(pool: pg.Pool): AgentTool {
 
         await updateAgent(pool, raw.id, fields);
         const message = `Agent ${raw.id} updated.`;
-        console.log(`[stavrobot] ${message}`);
+        log.info(`[stavrobot] ${message}`);
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },

@@ -9,6 +9,7 @@ import { sendTelegramMessage } from "./telegram-api.js";
 import { sendWhatsappTextMessage } from "./whatsapp-api.js";
 import type { FileAttachment } from "./uploads.js";
 import { getMainAgentId, isOwnerIdentity, resolveInterlocutor, loadAgent } from "./database.js";
+import { log } from "./log.js";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 30_000;
@@ -156,7 +157,7 @@ async function resolveTargetAgent(
   // Hard gate: sender must be in the allowlist. Owner messages bypass this
   // check above, and internal sources are handled earlier in this function.
   if (!isInAllowlist(source, sender)) {
-    console.log(`[stavrobot] Dropping message from sender not in allowlist: source=${source}, sender=${sender}`);
+    log.info(`[stavrobot] Dropping message from sender not in allowlist: source=${source}, sender=${sender}`);
     return null;
   }
 
@@ -178,14 +179,12 @@ async function processQueue(): Promise<void> {
   processing = true;
   while (queue.length > 0) {
     const entry = queue.shift()!;
-    if (process.env.STAVROBOT_DEBUG === "1") {
-      const preview = (entry.message ?? "").slice(0, 200);
-      console.log(`[stavrobot] [debug] Received: ${entry.source} - ${entry.sender} - ${preview}`);
-    }
+    const preview = (entry.message ?? "").slice(0, 200);
+    log.info(`[stavrobot] message in: ${entry.source} - ${entry.sender} - ${preview}`);
     try {
       const routing = await resolveTargetAgent(queuePool!, entry.source, entry.sender, entry.targetAgentId);
       if (routing === null) {
-        console.warn(`[stavrobot] Dropping message: could not resolve target agent. source=${entry.source}, sender=${entry.sender}`);
+        log.warn(`[stavrobot] Dropping message: could not resolve target agent. source=${entry.source}, sender=${entry.sender}`);
         entry.resolve("");
         continue;
       }
@@ -194,38 +193,38 @@ async function processQueue(): Promise<void> {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (error instanceof AuthError) {
-        console.error(`[stavrobot] Auth failure, not retrying: ${errorMessage}`);
+        log.error(`[stavrobot] Auth failure, not retrying: ${errorMessage}`);
         const loginMessage = `Authentication required. Visit ${queueConfig!.publicHostname}/providers/anthropic/login to log in.`;
         if (entry.source === "signal" && entry.sender !== undefined) {
           try {
             await sendSignalMessage(entry.sender, loginMessage);
           } catch (sendError) {
-            console.error(`[stavrobot] Failed to send Signal login notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+            log.error(`[stavrobot] Failed to send Signal login notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
           }
         } else if (entry.source === "telegram" && entry.sender !== undefined) {
           try {
             await sendTelegramMessage(queueConfig!.telegram!.botToken, entry.sender, loginMessage);
           } catch (sendError) {
-            console.error(`[stavrobot] Failed to send Telegram login notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+            log.error(`[stavrobot] Failed to send Telegram login notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
           }
         } else if (entry.source === "whatsapp" && entry.sender !== undefined) {
           try {
             await sendWhatsappTextMessage(entry.sender, loginMessage);
           } catch (sendError) {
-            console.error(`[stavrobot] Failed to send WhatsApp login notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
+            log.error(`[stavrobot] Failed to send WhatsApp login notification: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
           }
         }
         entry.resolve(loginMessage);
       } else if (errorMessage.includes("400 {")) {
-        console.error(`[stavrobot] Non-retryable API error (400 client error), not retrying: ${errorMessage}`);
+        log.error(`[stavrobot] Non-retryable API error (400 client error), not retrying: ${errorMessage}`);
         entry.resolve("Something went wrong processing your message. Please try again.");
       } else if (entry.retries < MAX_RETRIES) {
         const attempt = entry.retries + 1;
-        console.log(`[stavrobot] Message failed (attempt ${attempt}/${MAX_RETRIES + 1}), retrying in ${RETRY_DELAY_MS / 1000}s: ${errorMessage}`);
+        log.info(`[stavrobot] Message failed (attempt ${attempt}/${MAX_RETRIES + 1}), retrying in ${RETRY_DELAY_MS / 1000}s: ${errorMessage}`);
         await sleep(RETRY_DELAY_MS);
         queue.push({ ...entry, retries: attempt });
       } else {
-        console.error(`[stavrobot] Message failed after ${MAX_RETRIES + 1} attempts, giving up: ${errorMessage}`);
+        log.error(`[stavrobot] Message failed after ${MAX_RETRIES + 1} attempts, giving up: ${errorMessage}`);
         entry.reject(error);
       }
     }

@@ -2,6 +2,7 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import type { Config } from "./config.js";
+import { log } from "./log.js";
 
 const CLIENT_ID = atob("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZATION_URL = "https://claude.ai/oauth/authorize";
@@ -215,7 +216,7 @@ export async function handleLoginPost(
   const code = rawCode.slice(0, hashIndex);
   const state = rawCode.slice(hashIndex + 1);
 
-  console.log("[stavrobot] handleLoginPost: exchanging authorization code for tokens");
+  log.debug("[stavrobot] handleLoginPost: exchanging authorization code for tokens");
 
   let tokenResponse: Response;
   try {
@@ -233,7 +234,7 @@ export async function handleLoginPost(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("[stavrobot] handleLoginPost: token request failed:", message);
+    log.error("[stavrobot] handleLoginPost: token request failed:", message);
     response.writeHead(502, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ success: false, error: message }));
     return;
@@ -243,7 +244,7 @@ export async function handleLoginPost(
   try {
     tokenBody = await tokenResponse.json();
   } catch {
-    console.error("[stavrobot] handleLoginPost: token endpoint returned non-JSON response");
+    log.error("[stavrobot] handleLoginPost: token endpoint returned non-JSON response");
     response.writeHead(502, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ success: false, error: "Token endpoint returned a non-JSON response." }));
     return;
@@ -253,7 +254,7 @@ export async function handleLoginPost(
     const errorMessage = typeof tokenBody === "object" && tokenBody !== null && "error" in tokenBody
       ? String((tokenBody as Record<string, unknown>).error)
       : `HTTP ${tokenResponse.status}`;
-    console.error("[stavrobot] handleLoginPost: token endpoint returned error:", errorMessage);
+    log.error("[stavrobot] handleLoginPost: token endpoint returned error:", errorMessage);
     response.writeHead(502, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ success: false, error: errorMessage }));
     return;
@@ -266,7 +267,7 @@ export async function handleLoginPost(
     typeof (tokenBody as Record<string, unknown>).refresh_token !== "string" ||
     typeof (tokenBody as Record<string, unknown>).expires_in !== "number"
   ) {
-    console.error("[stavrobot] handleLoginPost: token response missing expected fields:", tokenBody);
+    log.error("[stavrobot] handleLoginPost: token response missing expected fields:", tokenBody);
     response.writeHead(502, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ success: false, error: "Token endpoint response is missing expected fields." }));
     return;
@@ -287,7 +288,7 @@ export async function handleLoginPost(
     try {
       credentials = JSON.parse(existing) as Record<string, unknown>;
     } catch {
-      console.error("[stavrobot] handleLoginPost: auth file contains invalid JSON:", authFile);
+      log.error("[stavrobot] handleLoginPost: auth file contains invalid JSON:", authFile);
       response.writeHead(500, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ success: false, error: "Auth file contains invalid JSON. Manual intervention required." }));
       return;
@@ -296,7 +297,7 @@ export async function handleLoginPost(
     // Only ENOENT (file not found) is expected — any other error is a real problem.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("[stavrobot] handleLoginPost: failed to read auth file:", message);
+      log.error("[stavrobot] handleLoginPost: failed to read auth file:", message);
       response.writeHead(500, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ success: false, error: `Failed to read auth file: ${message}` }));
       return;
@@ -315,13 +316,13 @@ export async function handleLoginPost(
     fs.writeFileSync(authFile, JSON.stringify(credentials, null, 2), "utf-8");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error("[stavrobot] handleLoginPost: failed to write auth file:", message);
+    log.error("[stavrobot] handleLoginPost: failed to write auth file:", message);
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ success: false, error: `Failed to write auth file: ${message}` }));
     return;
   }
 
-  console.log("[stavrobot] handleLoginPost: credentials written to", authFile);
+  log.debug("[stavrobot] handleLoginPost: credentials written to", authFile);
 
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify({ success: true }));

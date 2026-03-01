@@ -1,5 +1,6 @@
 import fs from "fs";
 import type { Config } from "./config.js";
+import { log } from "./log.js";
 
 export interface Allowlist {
   signal: string[];
@@ -38,14 +39,14 @@ export function loadAllowlist(config: Config): Allowlist {
   if (fs.existsSync(ALLOWLIST_PATH)) {
     const content = fs.readFileSync(ALLOWLIST_PATH, "utf-8");
     currentAllowlist = validateAllowlist(JSON.parse(content) as unknown);
-    console.log(`[stavrobot] Loaded allowlist from ${ALLOWLIST_PATH}`);
+    log.info(`[stavrobot] Loaded allowlist from ${ALLOWLIST_PATH}`);
   } else {
     // Migrate from config.toml if values are present there.
     const migratedSignal = config.signal?.allowedNumbers ?? [];
     const migratedTelegram = config.telegram?.allowedChatIds ?? [];
 
     if (migratedSignal.length > 0 || migratedTelegram.length > 0) {
-      console.warn(
+      log.warn(
         "[stavrobot] Migrated allowlist from config.toml to allowlist.json. " +
           "You can remove signal.allowedNumbers and telegram.allowedChatIds from config.toml.",
       );
@@ -66,7 +67,7 @@ export function loadAllowlist(config: Config): Allowlist {
   if (config.owner.telegram !== undefined) {
     const ownerTelegramId = Number(config.owner.telegram);
     if (!Number.isInteger(ownerTelegramId)) {
-      console.warn("[stavrobot] owner.telegram is not a valid integer, skipping allowlist seed:", config.owner.telegram);
+      log.warn("[stavrobot] owner.telegram is not a valid integer, skipping allowlist seed:", config.owner.telegram);
     } else if (!currentAllowlist.telegram.includes(ownerTelegramId)) {
       currentAllowlist.telegram.push(ownerTelegramId);
       changed = true;

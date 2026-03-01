@@ -3,6 +3,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { getOwnerInterlocutorId } from "./database.js";
 import { encodeToToon } from "./toon.js";
+import { log } from "./log.js";
 
 const HELP_TEXT = `manage_interlocutors tool — full documentation
 
@@ -154,11 +155,6 @@ export function createManageInterlocutorsTool(pool: pg.Pool): AgentTool {
 
       const { action } = raw;
 
-      console.log(`[stavrobot] manage_interlocutors called: action=${action} id=${raw.id}`);
-      if (process.env.STAVROBOT_DEBUG === "1") {
-        console.log(`[stavrobot] [debug] manage_interlocutors: ${JSON.stringify(raw)}`);
-      }
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: HELP_TEXT }],
@@ -239,7 +235,7 @@ export function createManageInterlocutorsTool(pool: pg.Pool): AgentTool {
           client.release();
         }
 
-        console.log(`[stavrobot] Interlocutor ${newId} created.`);
+        log.info(`[stavrobot] Interlocutor ${newId} created.`);
         const record = await fetchInterlocutorById(pool, newId);
         if (record === undefined) {
           const errorMessage = `Error: interlocutor ${newId} not found.`;
@@ -330,7 +326,7 @@ export function createManageInterlocutorsTool(pool: pg.Pool): AgentTool {
           values,
         );
 
-        console.log(`[stavrobot] Interlocutor ${raw.id} updated.`);
+        log.info(`[stavrobot] Interlocutor ${raw.id} updated.`);
         const record = await fetchInterlocutorById(pool, raw.id);
         if (record === undefined) {
           const errorMessage = `Error: interlocutor ${raw.id} not found.`;
@@ -367,7 +363,7 @@ export function createManageInterlocutorsTool(pool: pg.Pool): AgentTool {
           [raw.id],
         );
 
-        console.log(`[stavrobot] Identities removed from interlocutor ${raw.id}.`);
+        log.info(`[stavrobot] Identities removed from interlocutor ${raw.id}.`);
         const record = await fetchInterlocutorById(pool, raw.id);
         if (record === undefined) {
           const errorMessage = `Error: interlocutor ${raw.id} not found.`;
@@ -426,7 +422,7 @@ export function createManageInterlocutorsTool(pool: pg.Pool): AgentTool {
           };
         }
 
-        console.log(`[stavrobot] Identity added to interlocutor ${raw.id}.`);
+        log.info(`[stavrobot] Identity added to interlocutor ${raw.id}.`);
         const record = await fetchInterlocutorById(pool, raw.id);
         if (record === undefined) {
           const errorMessage = `Error: interlocutor ${raw.id} not found.`;
@@ -477,7 +473,7 @@ export function createManageInterlocutorsTool(pool: pg.Pool): AgentTool {
           [raw.id, raw.service.trim(), raw.identifier.trim()],
         );
 
-        console.log(`[stavrobot] Identity removed from interlocutor ${raw.id}.`);
+        log.info(`[stavrobot] Identity removed from interlocutor ${raw.id}.`);
         const record = await fetchInterlocutorById(pool, raw.id);
         if (record === undefined) {
           const errorMessage = `Error: interlocutor ${raw.id} not found.`;

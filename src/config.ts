@@ -1,5 +1,6 @@
 import fs from "fs";
 import TOML from "@iarna/toml";
+import { log } from "./log.js";
 
 const SYSTEM_PROMPT_PATH = "system-prompt.txt";
 const COMPACTION_PROMPT_PATH = "compaction-prompt.txt";
@@ -66,13 +67,13 @@ export function loadConfig(): Config {
   const configContent = fs.readFileSync(configPath, "utf-8");
   const config = TOML.parse(configContent) as unknown as Config;
 
-  console.log(`[stavrobot] Loading base system prompt from ${SYSTEM_PROMPT_PATH}`);
+  log.info(`[stavrobot] Loading base system prompt from ${SYSTEM_PROMPT_PATH}`);
   config.baseSystemPrompt = fs.readFileSync(SYSTEM_PROMPT_PATH, "utf-8").trimEnd();
 
-  console.log(`[stavrobot] Loading compaction prompt from ${COMPACTION_PROMPT_PATH}`);
+  log.info(`[stavrobot] Loading compaction prompt from ${COMPACTION_PROMPT_PATH}`);
   config.compactionPrompt = fs.readFileSync(COMPACTION_PROMPT_PATH, "utf-8").trimEnd();
 
-  console.log(`[stavrobot] Loading agent prompt from ${AGENT_PROMPT_PATH}`);
+  log.info(`[stavrobot] Loading agent prompt from ${AGENT_PROMPT_PATH}`);
   config.baseAgentPrompt = fs.readFileSync(AGENT_PROMPT_PATH, "utf-8").trimEnd();
 
   if (config.apiKey === undefined && config.authFile === undefined) {

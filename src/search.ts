@@ -2,6 +2,7 @@ import pg from "pg";
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { encodeToToon } from "./toon.js";
+import { log } from "./log.js";
 
 const EXCLUDED_TABLES = new Set(["messages", "compactions"]);
 const TEXT_LIKE_TYPES = new Set(["text", "varchar", "character", "character varying"]);
@@ -31,8 +32,6 @@ export function createSearchTool(pool: pg.Pool): AgentTool {
       params: unknown,
     ): Promise<AgentToolResult<{ result: string }>> => {
       const { query } = params as { query: string };
-
-      console.log("[stavrobot] search called:", query);
 
       const columnsResult = await pool.query<ColumnRow>(
         `SELECT table_name, column_name
@@ -77,13 +76,13 @@ export function createSearchTool(pool: pg.Pool): AgentTool {
             matchCount: searchResult.rows.length,
             rows: searchResult.rows as Record<string, unknown>[],
           });
-          console.log(`[stavrobot] search: table "${tableName}" returned ${searchResult.rows.length} match(es)`);
+          log.debug(`[stavrobot] search: table "${tableName}" returned ${searchResult.rows.length} match(es)`);
         }
       }
 
       if (tableResults.length === 0) {
         const noResultsMessage = `No results found for "${query}".`;
-        console.log("[stavrobot] search: no results found");
+        log.debug("[stavrobot] search: no results found");
         return {
           content: [{ type: "text" as const, text: noResultsMessage }],
           details: { result: noResultsMessage },

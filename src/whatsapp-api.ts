@@ -1,4 +1,5 @@
 import type { WASocket } from "@whiskeysockets/baileys";
+import { log } from "./log.js";
 
 let whatsappSocket: WASocket | undefined;
 
@@ -28,7 +29,7 @@ export function e164ToJid(phoneNumber: string): string {
 export async function sendWhatsappTextMessage(recipient: string, text: string): Promise<void> {
   const socket = getWhatsappSocket();
   if (socket === undefined) {
-    console.warn("[stavrobot] sendWhatsappTextMessage: WhatsApp socket not connected, dropping message.");
+    log.warn("[stavrobot] sendWhatsappTextMessage: WhatsApp socket not connected, dropping message.");
     return;
   }
   const jid = e164ToJid(recipient);

@@ -4,6 +4,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import { log } from "./log.js";
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 const TEXT_EXTENSIONS = new Set([".txt", ".md", ".csv", ".json", ".xml", ".html", ".css", ".js", ".ts", ".py", ".sh", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".log", ".sql", ".env"]);
@@ -72,8 +73,6 @@ export function createManageUploadsTool(): AgentTool {
 
       const action = raw.action;
 
-      console.log(`[stavrobot] manage_uploads called: action=${action} path=${raw.path}`);
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: MANAGE_UPLOADS_HELP_TEXT }],
@@ -94,7 +93,7 @@ export function createManageUploadsTool(): AgentTool {
 
         const validationError = validatePath(filePath);
         if (validationError !== null) {
-          console.warn("[stavrobot] manage_uploads read validation failed:", validationError);
+          log.warn("[stavrobot] manage_uploads read validation failed:", validationError);
           return {
             content: [{ type: "text" as const, text: validationError }],
             details: { message: validationError },
@@ -104,7 +103,7 @@ export function createManageUploadsTool(): AgentTool {
         const extension = path.extname(filePath).toLowerCase();
 
         if (IMAGE_EXTENSIONS.has(extension)) {
-          console.log("[stavrobot] manage_uploads read: classified as image:", extension);
+          log.debug("[stavrobot] manage_uploads read: classified as image:", extension);
           let buffer: Buffer;
           try {
             buffer = await fs.readFile(filePath);
@@ -114,7 +113,7 @@ export function createManageUploadsTool(): AgentTool {
               throw error;
             }
             const message = `File not found: ${filePath}`;
-            console.warn("[stavrobot] manage_uploads read error:", message);
+            log.warn("[stavrobot] manage_uploads read error:", message);
             return {
               content: [{ type: "text" as const, text: message }],
               details: { message },
@@ -123,7 +122,6 @@ export function createManageUploadsTool(): AgentTool {
           const base64Data = buffer.toString("base64");
           const mimeType = inferMimeType(extension);
           const imageContent: ImageContent = { type: "image", data: base64Data, mimeType };
-          console.log("[stavrobot] manage_uploads read result: read image", buffer.length, "bytes from", filePath);
           return {
             content: [imageContent],
             details: { message: `Read image (${mimeType}) of ${buffer.length} bytes from ${filePath}.` },
@@ -131,7 +129,7 @@ export function createManageUploadsTool(): AgentTool {
         }
 
         if (TEXT_EXTENSIONS.has(extension) || extension === "") {
-          console.log("[stavrobot] manage_uploads read: classified as text:", extension || "(no extension)");
+          log.debug("[stavrobot] manage_uploads read: classified as text:", extension || "(no extension)");
           let contents: string;
           try {
             contents = await fs.readFile(filePath, "utf-8");
@@ -141,13 +139,12 @@ export function createManageUploadsTool(): AgentTool {
               throw error;
             }
             const message = `File not found: ${filePath}`;
-            console.warn("[stavrobot] manage_uploads read error:", message);
+            log.warn("[stavrobot] manage_uploads read error:", message);
             return {
               content: [{ type: "text" as const, text: message }],
               details: { message },
             };
           }
-          console.log("[stavrobot] manage_uploads read result: read", contents.length, "characters from", filePath);
           return {
             content: [{ type: "text" as const, text: contents }],
             details: { message: `Read ${contents.length} characters from ${filePath}.` },
@@ -155,7 +152,7 @@ export function createManageUploadsTool(): AgentTool {
         }
 
         const message = `Cannot read binary file directly. The file is stored at ${filePath} with type ${extension}.`;
-        console.log("[stavrobot] manage_uploads read: classified as unsupported binary:", extension);
+        log.debug("[stavrobot] manage_uploads read: classified as unsupported binary:", extension);
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },
@@ -175,7 +172,7 @@ export function createManageUploadsTool(): AgentTool {
 
         const validationError = validatePath(filePath);
         if (validationError !== null) {
-          console.warn("[stavrobot] manage_uploads delete validation failed:", validationError);
+          log.warn("[stavrobot] manage_uploads delete validation failed:", validationError);
           return {
             content: [{ type: "text" as const, text: validationError }],
             details: { message: validationError },
@@ -190,7 +187,7 @@ export function createManageUploadsTool(): AgentTool {
             throw error;
           }
           const message = `File not found: ${filePath}`;
-          console.warn("[stavrobot] manage_uploads delete error:", message);
+          log.warn("[stavrobot] manage_uploads delete error:", message);
           return {
             content: [{ type: "text" as const, text: message }],
             details: { message },
@@ -198,7 +195,6 @@ export function createManageUploadsTool(): AgentTool {
         }
 
         const message = `File deleted: ${filePath}`;
-        console.log("[stavrobot] manage_uploads delete result:", message);
 
         return {
           content: [{ type: "text" as const, text: message }],

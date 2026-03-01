@@ -1,4 +1,5 @@
 import http from "http";
+import { log } from "./log.js";
 
 const PLUGIN_RUNNER_BASE_URL = "http://plugin-runner:3003";
 
@@ -13,10 +14,10 @@ async function readRequestBody(request: http.IncomingMessage): Promise<string> {
 export async function handlePluginsListRequest(
   response: http.ServerResponse,
 ): Promise<void> {
-  console.log("[stavrobot] handlePluginsListRequest: proxying GET /bundles");
+  log.debug("[stavrobot] handlePluginsListRequest: proxying GET /bundles");
   const pluginResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles`);
   const body = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginsListRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginsListRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(body);
 }
@@ -25,10 +26,10 @@ export async function handlePluginDetailRequest(
   response: http.ServerResponse,
   pluginName: string,
 ): Promise<void> {
-  console.log("[stavrobot] handlePluginDetailRequest: proxying GET /bundles/:name for", pluginName);
+  log.debug("[stavrobot] handlePluginDetailRequest: proxying GET /bundles/:name for", pluginName);
   const pluginResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles/${encodeURIComponent(pluginName)}`);
   const body = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginDetailRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginDetailRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(body);
 }
@@ -45,7 +46,7 @@ export async function handlePluginConfigRequest(
     response.end(JSON.stringify({ error: "Server password not configured; cannot proxy config request." }));
     return;
   }
-  console.log("[stavrobot] handlePluginConfigRequest: proxying GET /bundles/:name/config for", pluginName);
+  log.debug("[stavrobot] handlePluginConfigRequest: proxying GET /bundles/:name/config for", pluginName);
   const pluginResponse = await fetch(
     `${PLUGIN_RUNNER_BASE_URL}/bundles/${encodeURIComponent(pluginName)}/config`,
     {
@@ -53,7 +54,7 @@ export async function handlePluginConfigRequest(
     },
   );
   const body = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginConfigRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginConfigRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(body);
 }
@@ -63,14 +64,14 @@ export async function handlePluginInstallRequest(
   response: http.ServerResponse,
 ): Promise<void> {
   const body = await readRequestBody(request);
-  console.log("[stavrobot] handlePluginInstallRequest: proxying POST /install");
+  log.debug("[stavrobot] handlePluginInstallRequest: proxying POST /install");
   const pluginResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/install`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   });
   const responseBody = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginInstallRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginInstallRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(responseBody);
 }
@@ -80,14 +81,14 @@ export async function handlePluginUpdateRequest(
   response: http.ServerResponse,
 ): Promise<void> {
   const body = await readRequestBody(request);
-  console.log("[stavrobot] handlePluginUpdateRequest: proxying POST /update");
+  log.debug("[stavrobot] handlePluginUpdateRequest: proxying POST /update");
   const pluginResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/update`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   });
   const responseBody = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginUpdateRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginUpdateRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(responseBody);
 }
@@ -97,14 +98,14 @@ export async function handlePluginRemoveRequest(
   response: http.ServerResponse,
 ): Promise<void> {
   const body = await readRequestBody(request);
-  console.log("[stavrobot] handlePluginRemoveRequest: proxying POST /remove");
+  log.debug("[stavrobot] handlePluginRemoveRequest: proxying POST /remove");
   const pluginResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/remove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   });
   const responseBody = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginRemoveRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginRemoveRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(responseBody);
 }
@@ -114,14 +115,14 @@ export async function handlePluginConfigureRequest(
   response: http.ServerResponse,
 ): Promise<void> {
   const body = await readRequestBody(request);
-  console.log("[stavrobot] handlePluginConfigureRequest: proxying POST /configure");
+  log.debug("[stavrobot] handlePluginConfigureRequest: proxying POST /configure");
   const pluginResponse = await fetch(`${PLUGIN_RUNNER_BASE_URL}/configure`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   });
   const responseBody = await pluginResponse.text();
-  console.log("[stavrobot] handlePluginConfigureRequest: response status", pluginResponse.status);
+  log.debug("[stavrobot] handlePluginConfigureRequest: response status", pluginResponse.status);
   response.writeHead(pluginResponse.status, { "Content-Type": "application/json" });
   response.end(responseBody);
 }

@@ -1,5 +1,7 @@
+import { log } from "./log.js";
+
 export async function sendTelegramMessage(botToken: string, chatId: string, text: string): Promise<void> {
-  console.log("[stavrobot] sendTelegramMessage called:", { chatId, textLength: text.length });
+  log.debug("[stavrobot] sendTelegramMessage called:", { chatId, textLength: text.length });
 
   const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: "POST",
@@ -13,5 +15,5 @@ export async function sendTelegramMessage(botToken: string, chatId: string, text
     throw new Error(`Telegram API error ${response.status}: ${description}`);
   }
 
-  console.log("[stavrobot] sendTelegramMessage response status:", response.status);
+  log.debug("[stavrobot] sendTelegramMessage response status:", response.status);
 }

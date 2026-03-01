@@ -2,6 +2,7 @@ import fs from "fs";
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
 import { getOAuthApiKey } from "@mariozechner/pi-ai";
 import type { Config } from "./config.js";
+import { log } from "./log.js";
 
 export class AuthError extends Error {
   constructor(message: string) {
@@ -53,7 +54,7 @@ export async function getApiKey(config: Config): Promise<string> {
       fs.writeFileSync(authFile, JSON.stringify(credentials, null, 2));
 
       if (attempt > 0) {
-        console.log(`[stavrobot] OAuth token resolved after ${attempt + 1} attempts.`);
+        log.info(`[stavrobot] OAuth token resolved after ${attempt + 1} attempts.`);
       }
 
       return result.apiKey;
@@ -67,7 +68,7 @@ export async function getApiKey(config: Config): Promise<string> {
       }
 
       const delayMilliseconds = BASE_DELAY_MILLISECONDS * Math.pow(2, attempt);
-      console.error(`[stavrobot] OAuth token refresh failed (attempt ${attempt + 1}/${MAX_RETRIES}): ${errorMessage}. Retrying in ${delayMilliseconds}ms...`);
+      log.error(`[stavrobot] OAuth token refresh failed (attempt ${attempt + 1}/${MAX_RETRIES}): ${errorMessage}. Retrying in ${delayMilliseconds}ms...`);
       await sleep(delayMilliseconds);
     }
   }

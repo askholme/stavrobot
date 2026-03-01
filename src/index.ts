@@ -37,6 +37,7 @@ import {
 import { serveSignalCaptchaPage, handleSignalCaptchaSubmit } from "./signal-captcha.js";
 import { initializeWhatsApp } from "./whatsapp.js";
 import { serveHomePage } from "./home.js";
+import { log } from "./log.js";
 
 function isPublicRoute(method: string, pathname: string): boolean {
   if (method === "POST" && pathname === "/telegram/webhook") {
@@ -137,7 +138,7 @@ async function handleChatRequest(
           typeof (item as Record<string, unknown>).mimeType === "string"
         );
       });
-      console.log("[stavrobot] Received", rawFiles.length, "file(s) via 'files' field");
+      log.debug("[stavrobot] Received", rawFiles.length, "file(s) via 'files' field");
       for (const rawFile of rawFiles) {
         const buffer = Buffer.from(rawFile.data, "base64");
         const { storedPath } = await saveAttachment(buffer, rawFile.filename, rawFile.mimeType);
@@ -163,20 +164,12 @@ async function handleChatRequest(
 
     const audioContentType = "audioContentType" in parsedBody && typeof parsedBody.audioContentType === "string" ? parsedBody.audioContentType : undefined;
 
-    console.log("[stavrobot] Incoming request:", { message, source, sender, hasAudio: audio !== undefined, audioContentType, attachmentCount: combinedAttachments?.length ?? 0 });
-
     const assistantResponse = await enqueueMessage(message, source, sender, audio, audioContentType, combinedAttachments);
-
-    if (assistantResponse) {
-      console.log("[stavrobot] Agent response:", assistantResponse);
-    } else {
-      console.log("[stavrobot] Agent returned empty response.");
-    }
 
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ response: assistantResponse }));
   } catch (error) {
-    console.error("[stavrobot] Error handling request:", error);
+    log.error("[stavrobot] Error handling request:", error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: errorMessage }));
@@ -198,7 +191,6 @@ export async function handleTelegramWebhookRequest(
   if (webhookSecret !== undefined) {
     const providedSecret = request.headers["x-telegram-bot-api-secret-token"];
     if (providedSecret !== webhookSecret) {
-      const debug = process.env.STAVROBOT_DEBUG === "1";
       let reason = "unknown";
       if (providedSecret === undefined) {
         reason = "missing_header";
@@ -209,13 +201,11 @@ export async function handleTelegramWebhookRequest(
       } else {
         reason = "wrong_secret";
       }
-      console.log(`[stavrobot] Telegram webhook rejected: ${reason}`);
-      if (debug) {
-        const expectedFingerprint = webhookSecret.slice(0, 8);
-        const providedFingerprint = typeof providedSecret === "string" ? providedSecret.slice(0, 8) : String(providedSecret);
-        console.log(`[stavrobot] [debug] Secret mismatch: expected=${expectedFingerprint}..., provided=${providedFingerprint}...`);
-        console.log(`[stavrobot] [debug] Request metadata: remoteAddress=${request.socket?.remoteAddress}, x-forwarded-for=${request.headers["x-forwarded-for"]}, user-agent=${request.headers["user-agent"]}, content-length=${request.headers["content-length"]}`);
-      }
+      log.info(`[stavrobot] Telegram webhook rejected: ${reason}`);
+      const expectedFingerprint = webhookSecret.slice(0, 8);
+      const providedFingerprint = typeof providedSecret === "string" ? providedSecret.slice(0, 8) : String(providedSecret);
+      log.debug(`[stavrobot] [debug] Secret mismatch: expected=${expectedFingerprint}..., provided=${providedFingerprint}...`);
+      log.debug(`[stavrobot] [debug] Request metadata: remoteAddress=${request.socket?.remoteAddress}, x-forwarded-for=${request.headers["x-forwarded-for"]}, user-agent=${request.headers["user-agent"]}, content-length=${request.headers["content-length"]}`);
       response.writeHead(403, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: "Forbidden" }));
       return;
@@ -240,7 +230,7 @@ export async function handleTelegramWebhookRequest(
 
     void handleTelegramWebhook(parsedBody, telegramConfig);
   } catch (error) {
-    console.error("[stavrobot] Error handling Telegram webhook request:", error);
+    log.error("[stavrobot] Error handling Telegram webhook request:", error);
     if (!response.headersSent) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       response.writeHead(500, { "Content-Type": "application/json" });
@@ -344,13 +334,13 @@ export async function handlePageQueryRequest(
     }
     const parameterizedSql = sql.replace(/\$param:(\w+)/g, (_full, name: string) => paramMap.get(name) ?? "");
 
-    console.log(`[stavrobot] Page query: ${pagePath}/${queryName}`, parameterizedSql);
+    log.info(`[stavrobot] Page query: ${pagePath}/${queryName}`, parameterizedSql);
     const result = await pool.query(parameterizedSql, paramValues);
 
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(result.rows));
   } catch (error) {
-    console.error("[stavrobot] Error handling page query request:", error);
+    log.error("[stavrobot] Error handling page query request:", error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: errorMessage }));
@@ -391,11 +381,11 @@ async function handlePageRequest(
       }
     }
 
-    console.log(`[stavrobot] Serving page: ${pagePath} (public: ${page.isPublic})`);
+    log.info(`[stavrobot] Serving page: ${pagePath} (public: ${page.isPublic})`);
     response.writeHead(200, { "Content-Type": page.mimetype });
     response.end(page.data);
   } catch (error) {
-    console.error("[stavrobot] Error handling page request:", error);
+    log.error("[stavrobot] Error handling page request:", error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: errorMessage }));
@@ -424,9 +414,7 @@ async function main(): Promise<void> {
       throw new Error("Config must specify publicHostname when telegram is configured.");
     }
     telegramWebhookSecret = await registerTelegramWebhook(config.telegram, config.publicHostname);
-    if (process.env.STAVROBOT_DEBUG === "1") {
-      console.log(`[stavrobot] [debug] Telegram webhook secret loaded: fingerprint=${telegramWebhookSecret.slice(0, 8)}..., bootTime=${new Date().toISOString()}`);
-    }
+    log.debug(`[stavrobot] [debug] Telegram webhook secret loaded: fingerprint=${telegramWebhookSecret.slice(0, 8)}..., bootTime=${new Date().toISOString()}`);
   }
 
   if (config.whatsapp !== undefined) {
@@ -439,7 +427,7 @@ async function main(): Promise<void> {
 
     if (config.password !== undefined && !isPublicRoute(request.method ?? "", pathname)) {
       if (!checkBasicAuth(request, config.password)) {
-        console.log("[stavrobot] Unauthorized request:", request.method, pathname);
+        log.info("[stavrobot] Unauthorized request:", request.method, pathname);
         response.writeHead(401, {
           "Content-Type": "application/json",
           "WWW-Authenticate": `Basic realm="stavrobot"`,
@@ -521,7 +509,7 @@ async function main(): Promise<void> {
 
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   server.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
+    log.info(`Server listening on port ${port}`);
   });
 
   const internalServer = http.createServer((request: http.IncomingMessage, response: http.ServerResponse): void => {
@@ -534,7 +522,7 @@ async function main(): Promise<void> {
   });
 
   internalServer.listen(3001, () => {
-    console.log("[stavrobot] Internal server listening on port 3001");
+    log.info("[stavrobot] Internal server listening on port 3001");
   });
 }
 

@@ -4,6 +4,7 @@ import type { TelegramConfig } from "./config.js";
 import { isInAllowlist } from "./allowlist.js";
 import { enqueueMessage } from "./queue.js";
 import { saveAttachment, type FileAttachment } from "./uploads.js";
+import { log } from "./log.js";
 
 interface TelegramVoice {
   file_id: string;
@@ -260,11 +261,10 @@ function isTelegramMessage(value: unknown): value is TelegramMessage {
 }
 
 export async function registerTelegramWebhook(config: TelegramConfig, publicHostname: string): Promise<string> {
-  const debug = process.env.STAVROBOT_DEBUG === "1";
   const webhookUrl = `${publicHostname}/telegram/webhook`;
   const secret = randomUUID();
   const secretFingerprint = secret.slice(0, 8);
-  console.log("[stavrobot] Registering Telegram webhook:", webhookUrl);
+  log.info("[stavrobot] Registering Telegram webhook:", webhookUrl);
 
   const response = await fetch(
     `https://api.telegram.org/bot${config.botToken}/setWebhook`,
@@ -281,12 +281,12 @@ export async function registerTelegramWebhook(config: TelegramConfig, publicHost
     throw new Error(`Failed to register Telegram webhook: ${result.description ?? "unknown error"}`);
   }
 
-  console.log("[stavrobot] Telegram webhook registered successfully.");
+  log.info("[stavrobot] Telegram webhook registered successfully.");
 
-  if (debug) {
-    console.log(`[stavrobot] [debug] setWebhook: url=${webhookUrl}, secret=${secretFingerprint}..., status=${response.status}`);
+  log.debug(`[stavrobot] [debug] setWebhook: url=${webhookUrl}, secret=${secretFingerprint}..., status=${response.status}`);
 
-    // Verify the webhook state Telegram actually stored.
+  // Verify the webhook state Telegram actually stored.
+  if (log.isDebugEnabled()) {
     const infoResponse = await fetch(
       `https://api.telegram.org/bot${config.botToken}/getWebhookInfo`
     );
@@ -302,9 +302,9 @@ export async function registerTelegramWebhook(config: TelegramConfig, publicHost
     };
     if (info.ok && info.result !== undefined) {
       const r = info.result;
-      console.log(`[stavrobot] [debug] getWebhookInfo: url=${r.url}, pending=${r.pending_update_count}, lastError=${r.last_error_message ?? "none"}, customCert=${r.has_custom_certificate}`);
+      log.debug(`[stavrobot] [debug] getWebhookInfo: url=${r.url}, pending=${r.pending_update_count}, lastError=${r.last_error_message ?? "none"}, customCert=${r.has_custom_certificate}`);
     } else {
-      console.log("[stavrobot] [debug] getWebhookInfo: failed or empty result");
+      log.debug("[stavrobot] [debug] getWebhookInfo: failed or empty result");
     }
   }
 
@@ -312,7 +312,7 @@ export async function registerTelegramWebhook(config: TelegramConfig, publicHost
 }
 
 async function downloadTelegramFile(config: TelegramConfig, fileId: string): Promise<Buffer> {
-  console.log("[stavrobot] Fetching Telegram file info for file_id:", fileId);
+  log.debug("[stavrobot] Fetching Telegram file info for file_id:", fileId);
 
   const fileInfoResponse = await fetch(
     `https://api.telegram.org/bot${config.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`
@@ -324,7 +324,7 @@ async function downloadTelegramFile(config: TelegramConfig, fileId: string): Pro
   }
 
   const filePath = fileInfo.result.file_path;
-  console.log("[stavrobot] Downloading Telegram file:", filePath);
+  log.debug("[stavrobot] Downloading Telegram file:", filePath);
 
   const fileResponse = await fetch(
     `https://api.telegram.org/file/bot${config.botToken}/${filePath}`
@@ -332,7 +332,7 @@ async function downloadTelegramFile(config: TelegramConfig, fileId: string): Pro
   const arrayBuffer = await fileResponse.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
 
-  console.log("[stavrobot] Downloaded file, size (bytes):", arrayBuffer.byteLength);
+  log.debug("[stavrobot] Downloaded file, size (bytes):", arrayBuffer.byteLength);
   return buffer;
 }
 
@@ -346,33 +346,31 @@ export async function handleTelegramWebhook(
   config: TelegramConfig
 ): Promise<void> {
   if (!isTelegramUpdate(body)) {
-    console.log("[stavrobot] Telegram webhook received non-object body, ignoring.");
+    log.debug("[stavrobot] Telegram webhook received non-object body, ignoring.");
     return;
   }
 
   const update = body as TelegramUpdate;
 
   if (update.message === undefined) {
-    console.log("[stavrobot] Telegram update has no message, ignoring.");
+    log.debug("[stavrobot] Telegram update has no message, ignoring.");
     return;
   }
 
   const rawMessage = update.message as unknown;
   if (!isTelegramMessage(rawMessage)) {
-    console.log("[stavrobot] Telegram message missing chat.id, ignoring.");
+    log.debug("[stavrobot] Telegram message missing chat.id, ignoring.");
     return;
   }
 
   const message = rawMessage;
   const chatId = message.chat.id;
 
-  if (process.env.STAVROBOT_DEBUG === "1") {
-    const updateType = message.voice || message.audio ? "voice" : message.photo ? "photo" : message.document ? "document" : message.text ? "text" : "unknown";
-    console.log(`[stavrobot] [debug] Webhook accepted: chatId=${chatId}, type=${updateType}`);
-  }
+  const updateType = message.voice || message.audio ? "voice" : message.photo ? "photo" : message.document ? "document" : message.text ? "text" : "unknown";
+  log.debug(`[stavrobot] [debug] Webhook accepted: chatId=${chatId}, type=${updateType}`);
 
   if (!isInAllowlist("telegram", String(chatId))) {
-    console.log("[stavrobot] Telegram message from disallowed chat ID:", chatId);
+    log.info("[stavrobot] Telegram message from disallowed chat ID:", chatId);
     return;
   }
 
@@ -389,12 +387,12 @@ export async function handleTelegramWebhook(
     const fileId = voiceOrAudio.file_id;
     // Telegram voice notes are always OGG Opus; fall back to that if mime_type is absent.
     const audioContentType = voiceOrAudio.mime_type ?? "audio/ogg";
-    console.log("[stavrobot] Telegram voice/audio message from chat:", chatId, "contentType:", audioContentType);
+    log.debug("[stavrobot] Telegram voice/audio message from chat:", chatId, "contentType:", audioContentType);
     // Fire-and-forget: Telegram requires a fast 200 response, so we don't await.
     void downloadVoiceAsBase64(config, fileId).then((audioBase64) => {
       void enqueueMessage(formattedText ?? formattedCaption, "telegram", String(chatId), audioBase64, audioContentType);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading Telegram voice/audio:", error);
+      log.error("[stavrobot] Error downloading Telegram voice/audio:", error);
     });
     return;
   }
@@ -403,7 +401,7 @@ export async function handleTelegramWebhook(
     // Pick the last element, which Telegram guarantees is the highest resolution.
     const photo = message.photo[message.photo.length - 1];
     const fileId = photo.file_id;
-    console.log("[stavrobot] Telegram photo message from chat:", chatId, "file_id:", fileId);
+    log.debug("[stavrobot] Telegram photo message from chat:", chatId, "file_id:", fileId);
     // Fire-and-forget: Telegram requires a fast 200 response, so we don't await.
     void downloadTelegramFile(config, fileId).then(async (buffer) => {
       const filename = `photo-${fileId}.jpg`;
@@ -417,7 +415,7 @@ export async function handleTelegramWebhook(
       };
       void enqueueMessage(formattedCaption, "telegram", String(chatId), undefined, undefined, [attachment]);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading Telegram photo:", error);
+      log.error("[stavrobot] Error downloading Telegram photo:", error);
     });
     return;
   }
@@ -427,7 +425,7 @@ export async function handleTelegramWebhook(
     const fileId = document.file_id;
     const mimeType = document.mime_type ?? "application/octet-stream";
     const filename = document.file_name ?? `document-${fileId}`;
-    console.log("[stavrobot] Telegram document message from chat:", chatId, "file_id:", fileId, "mimeType:", mimeType);
+    log.debug("[stavrobot] Telegram document message from chat:", chatId, "file_id:", fileId, "mimeType:", mimeType);
     // Fire-and-forget: Telegram requires a fast 200 response, so we don't await.
     void downloadTelegramFile(config, fileId).then(async (buffer) => {
       const { storedPath } = await saveAttachment(buffer, filename, mimeType);
@@ -439,17 +437,17 @@ export async function handleTelegramWebhook(
       };
       void enqueueMessage(formattedCaption, "telegram", String(chatId), undefined, undefined, [attachment]);
     }).catch((error: unknown) => {
-      console.error("[stavrobot] Error downloading Telegram document:", error);
+      log.error("[stavrobot] Error downloading Telegram document:", error);
     });
     return;
   }
 
   if (formattedText !== undefined) {
-    console.log("[stavrobot] Telegram text message from chat:", chatId);
+    log.debug("[stavrobot] Telegram text message from chat:", chatId);
     // Fire-and-forget: Telegram requires a fast 200 response, so we don't await.
     void enqueueMessage(formattedText, "telegram", String(chatId));
     return;
   }
 
-  console.log("[stavrobot] Telegram message has no supported content, ignoring.");
+  log.debug("[stavrobot] Telegram message has no supported content, ignoring.");
 }

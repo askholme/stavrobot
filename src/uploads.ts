@@ -5,6 +5,7 @@ import crypto from "crypto";
 import busboy from "busboy";
 import { enqueueMessage } from "./queue.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import { log } from "./log.js";
 
 export interface FileAttachment {
   storedPath: string;
@@ -24,7 +25,7 @@ export async function saveAttachment(
   const storedFilename = `upload-${crypto.randomUUID()}${extension}`;
   const storedPath = path.join(TEMP_ATTACHMENTS_DIR, storedFilename);
 
-  console.log("[stavrobot] Saving attachment to:", storedPath, "mimeType:", mimeType);
+  log.debug("[stavrobot] Saving attachment to:", storedPath, "mimeType:", mimeType);
 
   await fs.promises.writeFile(storedPath, data);
 
@@ -133,7 +134,7 @@ export async function handleUploadRequest(
       size: fileSize,
     };
 
-    console.log("[stavrobot] File uploaded:", storedFilename, "size:", fileSize, "bytes");
+    log.debug("[stavrobot] File uploaded:", storedFilename, "size:", fileSize, "bytes");
 
     // Fire-and-forget: return the HTTP response immediately without waiting for the agent.
     void enqueueMessage(undefined, "upload", undefined, undefined, undefined, [attachment]);
@@ -141,7 +142,7 @@ export async function handleUploadRequest(
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ message: "File uploaded successfully", filename: storedFilename }));
   } catch (error) {
-    console.error("[stavrobot] Error handling upload request:", error);
+    log.error("[stavrobot] Error handling upload request:", error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ error: errorMessage }));

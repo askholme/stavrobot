@@ -26,6 +26,7 @@ import { sendSignalMessage } from "./signal.js";
 import { sendTelegramMessage } from "./telegram-api.js";
 import { getWhatsappSocket, e164ToJid, sendWhatsappTextMessage } from "./whatsapp-api.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import { log } from "./log.js";
 export { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
 
 function buildPromptSuffix(publicHostname: string): string {
@@ -48,8 +49,6 @@ let compactionCompletedForAgent: number | null = null;
 // each handlePrompt call. The queue is single-threaded so there is no race
 // condition. The send_agent_message tool reads this to identify the sender.
 export let currentAgentId: number = 0;
-
-export const STAVROBOT_DEBUG = process.env.STAVROBOT_DEBUG === "1";
 
 export function createExecuteSqlTool(pool: pg.Pool): AgentTool {
   return {
@@ -123,8 +122,6 @@ export function createManageKnowledgeTool(pool: pg.Pool): AgentTool {
 
       const { action, store } = raw;
 
-      console.log(`[stavrobot] manage_knowledge called: action=${action} store=${store} id=${raw.id}`);
-
       if (action === "help") {
         return {
           content: [{ type: "text" as const, text: MANAGE_KNOWLEDGE_HELP_TEXT }],
@@ -158,7 +155,7 @@ export function createManageKnowledgeTool(pool: pg.Pool): AgentTool {
             };
           }
           const message = raw.id === undefined ? `Memory ${memoryResult.id} created.` : `Memory ${memoryResult.id} updated.`;
-          console.log(`[stavrobot] ${message}`);
+          log.info(`[stavrobot] ${message}`);
           return {
             content: [{ type: "text" as const, text: message }],
             details: { message },
@@ -189,7 +186,7 @@ export function createManageKnowledgeTool(pool: pg.Pool): AgentTool {
             };
           }
           const message = raw.id === undefined ? `Scratchpad entry ${scratchpadResult.id} created.` : `Scratchpad entry ${scratchpadResult.id} updated.`;
-          console.log(`[stavrobot] ${message}`);
+          log.info(`[stavrobot] ${message}`);
           return {
             content: [{ type: "text" as const, text: message }],
             details: { message },
@@ -230,7 +227,7 @@ export function createManageKnowledgeTool(pool: pg.Pool): AgentTool {
             };
           }
           const message = `Memory ${raw.id} deleted.`;
-          console.log(`[stavrobot] ${message}`);
+          log.info(`[stavrobot] ${message}`);
           return {
             content: [{ type: "text" as const, text: message }],
             details: { message },
@@ -247,7 +244,7 @@ export function createManageKnowledgeTool(pool: pg.Pool): AgentTool {
             };
           }
           const message = `Scratchpad entry ${raw.id} deleted.`;
-          console.log(`[stavrobot] ${message}`);
+          log.info(`[stavrobot] ${message}`);
           return {
             content: [{ type: "text" as const, text: message }],
             details: { message },
@@ -298,8 +295,6 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
       const message = raw.message?.trim() || undefined;
       const attachmentPath = raw.attachmentPath?.trim() || undefined;
 
-      console.log("[stavrobot] send_signal_message called:", { recipient: recipientInput, hasAttachment: attachmentPath !== undefined });
-
       if (message === undefined && attachmentPath === undefined) {
         return {
           content: [{ type: "text" as const, text: "Error: at least one of message or attachmentPath must be provided." }],
@@ -314,7 +309,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
         recipient = resolved.identifier;
       } else if (resolved !== null && "disabled" in resolved) {
         const errorMessage = `Error: Interlocutor "${resolved.displayName}" is disabled.`;
-        console.warn("[stavrobot] send_signal_message rejected:", errorMessage);
+        log.warn("[stavrobot] send_signal_message rejected:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
@@ -325,7 +320,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
         const interlocutor = await resolveInterlocutorByName(pool, recipientInput);
         if (interlocutor !== null) {
           const errorMessage = `Error: interlocutor '${recipientInput}' has no Signal identity. Use manage_interlocutors to add one.`;
-          console.warn("[stavrobot] send_signal_message rejected:", errorMessage);
+          log.warn("[stavrobot] send_signal_message rejected:", errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
@@ -338,7 +333,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
         );
         if (identityCheck.rows.length === 0) {
           const errorMessage = `Error: unknown recipient '${recipientInput}'. No interlocutor found with that display name or phone number.`;
-          console.warn("[stavrobot] send_signal_message rejected:", errorMessage);
+          log.warn("[stavrobot] send_signal_message rejected:", errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
@@ -350,17 +345,15 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("signal", recipient)) {
         const errorMessage = `Error: recipient '${recipient}' is not in the Signal allowlist.`;
-        console.warn("[stavrobot] send_signal_message rejected:", errorMessage);
+        log.warn("[stavrobot] send_signal_message rejected:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
         };
       }
 
-      if (STAVROBOT_DEBUG) {
-        const preview = (message ?? "").slice(0, 200);
-        console.log(`[stavrobot] [debug] Sending: signal - ${recipient} - ${preview}`);
-      }
+      const signalPreview = (message ?? "").slice(0, 200);
+      log.info(`[stavrobot] message out: signal - ${recipient} - ${signalPreview}`);
 
       if (attachmentPath !== undefined) {
         const resolvedAttachmentPath = path.resolve(attachmentPath);
@@ -395,7 +388,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
         const responseText = await response.text();
 
         if (response.status === 429) {
-          console.warn("[stavrobot] send_signal_message rate limited by bridge (attachment path)");
+          log.warn("[stavrobot] send_signal_message rate limited by bridge (attachment path)");
           const rateLimitMessage = signalRateLimitMessage(config.publicHostname);
           return {
             content: [{ type: "text" as const, text: rateLimitMessage }],
@@ -428,7 +421,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
           throw parseError;
         }
 
-        console.log("[stavrobot] send_signal_message bridge response status:", response.status);
+        log.debug("[stavrobot] send_signal_message bridge response status:", response.status);
 
         const successMessage = "Message sent successfully.";
         return {
@@ -439,7 +432,7 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
 
       const sendResult = await sendSignalMessage(recipient, message as string);
       if (sendResult === "rate_limited") {
-        console.warn("[stavrobot] send_signal_message rate limited by bridge (text-only path)");
+        log.warn("[stavrobot] send_signal_message rate limited by bridge (text-only path)");
         const rateLimitMessage = signalRateLimitMessage(config.publicHostname);
         return {
           content: [{ type: "text" as const, text: rateLimitMessage }],
@@ -480,8 +473,6 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
       const message = raw.message?.trim() || undefined;
       const attachmentPath = raw.attachmentPath?.trim() || undefined;
 
-      console.log("[stavrobot] send_telegram_message called:", { recipient: recipientInput, hasAttachment: attachmentPath !== undefined });
-
       if (message === undefined && attachmentPath === undefined) {
         return {
           content: [{ type: "text" as const, text: "Error: at least one of message or attachmentPath must be provided." }],
@@ -504,7 +495,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
         recipient = resolved.identifier;
       } else if (resolved !== null && "disabled" in resolved) {
         const errorMessage = `Error: Interlocutor "${resolved.displayName}" is disabled.`;
-        console.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
+        log.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
@@ -515,7 +506,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
         const interlocutor = await resolveInterlocutorByName(pool, recipientInput);
         if (interlocutor !== null) {
           const errorMessage = `Error: interlocutor '${recipientInput}' has no Telegram identity. Use manage_interlocutors to add one.`;
-          console.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
+          log.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
@@ -528,7 +519,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
         );
         if (identityCheck.rows.length === 0) {
           const errorMessage = `Error: unknown recipient '${recipientInput}'. No interlocutor found with that display name or chat ID.`;
-          console.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
+          log.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
@@ -540,7 +531,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("telegram", recipient)) {
         const errorMessage = `Error: recipient '${recipient}' is not in the Telegram allowlist.`;
-        console.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
+        log.warn("[stavrobot] send_telegram_message rejected:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
@@ -549,10 +540,8 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
 
       const baseUrl = `https://api.telegram.org/bot${config.telegram.botToken}`;
 
-      if (STAVROBOT_DEBUG) {
-        const preview = (message ?? "").slice(0, 200);
-        console.log(`[stavrobot] [debug] Sending: telegram - ${recipient} - ${preview}`);
-      }
+      const telegramPreview = (message ?? "").slice(0, 200);
+      log.info(`[stavrobot] message out: telegram - ${recipient} - ${telegramPreview}`);
 
       if (attachmentPath !== undefined) {
         const resolvedAttachmentPath = path.resolve(attachmentPath);
@@ -580,7 +569,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
           formFieldName = "document";
         }
 
-        console.log("[stavrobot] send_telegram_message attachment type detected:", { extension, apiMethod });
+        log.debug("[stavrobot] send_telegram_message attachment type detected:", { extension, apiMethod });
 
         const fileBuffer = await fs.readFile(resolvedAttachmentPath);
         const formData = new FormData();
@@ -605,14 +594,14 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
           const errorBody = await response.json() as { description?: string };
           const description = errorBody.description ?? "unknown error";
           const errorMessage = `Error: Telegram API error ${response.status}: ${description}`;
-          console.error(`[stavrobot] send_telegram_message ${apiMethod} error:`, errorMessage);
+          log.error(`[stavrobot] send_telegram_message ${apiMethod} error:`, errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
           };
         }
 
-        console.log(`[stavrobot] send_telegram_message ${apiMethod} response status:`, response.status);
+        log.debug(`[stavrobot] send_telegram_message ${apiMethod} response status:`, response.status);
         const successMessage = "Message sent successfully.";
         return {
           content: [{ type: "text" as const, text: successMessage }],
@@ -626,7 +615,7 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
         await sendTelegramMessage(config.telegram.botToken, recipient, htmlText);
       } catch (error) {
         const errorMessage = `Error: ${error instanceof Error ? error.message : String(error)}`;
-        console.error("[stavrobot] send_telegram_message sendMessage error:", errorMessage);
+        log.error("[stavrobot] send_telegram_message sendMessage error:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
@@ -666,8 +655,6 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
       const message = raw.message?.trim() || undefined;
       const attachmentPath = raw.attachmentPath?.trim() || undefined;
 
-      console.log("[stavrobot] send_whatsapp_message called:", { recipient: recipientInput, hasAttachment: attachmentPath !== undefined });
-
       if (message === undefined && attachmentPath === undefined) {
         return {
           content: [{ type: "text" as const, text: "Error: at least one of message or attachmentPath must be provided." }],
@@ -682,7 +669,7 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
         recipient = resolved.identifier;
       } else if (resolved !== null && "disabled" in resolved) {
         const errorMessage = `Error: Interlocutor "${resolved.displayName}" is disabled.`;
-        console.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
+        log.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
@@ -693,7 +680,7 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
         const interlocutor = await resolveInterlocutorByName(pool, recipientInput);
         if (interlocutor !== null) {
           const errorMessage = `Error: interlocutor '${recipientInput}' has no WhatsApp identity. Use manage_interlocutors to add one.`;
-          console.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
+          log.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
@@ -706,7 +693,7 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
         );
         if (identityCheck.rows.length === 0) {
           const errorMessage = `Error: unknown recipient '${recipientInput}'. No interlocutor found with that display name or phone number.`;
-          console.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
+          log.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
           return {
             content: [{ type: "text" as const, text: errorMessage }],
             details: { message: errorMessage },
@@ -718,17 +705,15 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("whatsapp", recipient)) {
         const errorMessage = `Error: recipient '${recipient}' is not in the WhatsApp allowlist.`;
-        console.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
+        log.warn("[stavrobot] send_whatsapp_message rejected:", errorMessage);
         return {
           content: [{ type: "text" as const, text: errorMessage }],
           details: { message: errorMessage },
         };
       }
 
-      if (STAVROBOT_DEBUG) {
-        const preview = (message ?? "").slice(0, 200);
-        console.log(`[stavrobot] [debug] Sending: whatsapp - ${recipient} - ${preview}`);
-      }
+      const whatsappPreview = (message ?? "").slice(0, 200);
+      log.info(`[stavrobot] message out: whatsapp - ${recipient} - ${whatsappPreview}`);
 
       if (attachmentPath !== undefined) {
         const resolvedAttachmentPath = path.resolve(attachmentPath);
@@ -752,7 +737,7 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
         const audioExtensions = new Set([".mp3", ".ogg", ".oga", ".wav", ".m4a"]);
         const videoExtensions = new Set([".mp4", ".mov", ".avi", ".mkv"]);
 
-        console.log("[stavrobot] send_whatsapp_message attachment type detected:", { extension });
+        log.debug("[stavrobot] send_whatsapp_message attachment type detected:", { extension });
 
         const fileBuffer = await fs.readFile(resolvedAttachmentPath);
         const fileName = path.basename(resolvedAttachmentPath);
@@ -783,7 +768,7 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
           await socket.sendMessage(jid, { document: fileBuffer, fileName, mimetype });
         }
 
-        console.log("[stavrobot] send_whatsapp_message attachment sent successfully.");
+        log.debug("[stavrobot] send_whatsapp_message attachment sent successfully.");
         const successMessage = "Message sent successfully.";
         return {
           content: [{ type: "text" as const, text: successMessage }],
@@ -879,7 +864,7 @@ export function createManageCronTool(pool: pg.Pool): AgentTool {
         const entry = await createCronEntry(pool, cronExpression, fireAt, raw.note.trim());
         await reloadScheduler(pool);
         const message = `Cron entry ${entry.id} created.`;
-        console.log(`[stavrobot] ${message}`);
+        log.info(`[stavrobot] ${message}`);
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },
@@ -914,7 +899,7 @@ export function createManageCronTool(pool: pg.Pool): AgentTool {
         await updateCronEntry(pool, raw.id, fields);
         await reloadScheduler(pool);
         const message = `Cron entry ${raw.id} updated.`;
-        console.log(`[stavrobot] ${message}`);
+        log.info(`[stavrobot] ${message}`);
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },
@@ -931,7 +916,7 @@ export function createManageCronTool(pool: pg.Pool): AgentTool {
         await deleteCronEntry(pool, raw.id);
         await reloadScheduler(pool);
         const message = `Cron entry ${raw.id} deleted.`;
-        console.log(`[stavrobot] ${message}`);
+        log.info(`[stavrobot] ${message}`);
         return {
           content: [{ type: "text" as const, text: message }],
           details: { message },
@@ -951,6 +936,26 @@ export function createManageCronTool(pool: pg.Pool): AgentTool {
         content: [{ type: "text" as const, text: `Error: unknown action '${action}'. Valid actions: create, update, delete, list, help.` }],
         details: { message: `Error: unknown action '${action}'.` },
       };
+    },
+  };
+}
+
+function truncate(text: string, maxLength: number): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function wrapToolWithLogging(tool: AgentTool): AgentTool {
+  const originalExecute = tool.execute;
+  return {
+    ...tool,
+    execute: async (toolCallId, params, signal, onUpdate) => {
+      const compactParams = truncate(JSON.stringify(params), 200);
+      log.info(`[stavrobot] tool: ${tool.name}(${compactParams})`);
+      const result = await originalExecute(toolCallId, params, signal, onUpdate);
+      const textBlock = result.content.find((block): block is { type: "text"; text: string } => block.type === "text");
+      const compactResult = truncate(textBlock !== undefined ? textBlock.text : "(no text content)", 200);
+      log.info(`[stavrobot] tool: ${tool.name} -> ${compactResult}`);
+      return result;
     },
   };
 }
@@ -982,7 +987,7 @@ export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent>
     initialState: {
       systemPrompt: effectiveBasePrompt,
       model,
-      tools,
+      tools: tools.map(wrapToolWithLogging),
       messages: [],
     },
     getApiKey: () => getApiKey(config),
@@ -1147,7 +1152,7 @@ async function fetchPluginListSection(): Promise<string | undefined> {
   try {
     const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles`);
     if (!response.ok) {
-      console.warn(`[stavrobot] fetchPluginListSection: plugin runner returned ${response.status}`);
+      log.warn(`[stavrobot] fetchPluginListSection: plugin runner returned ${response.status}`);
       return undefined;
     }
     const data = await response.json() as { plugins: PluginSummary[] };
@@ -1159,10 +1164,10 @@ async function fetchPluginListSection(): Promise<string | undefined> {
     for (const plugin of plugins) {
       lines.push(`- ${plugin.name}: ${plugin.description}`);
     }
-    console.log(`[stavrobot] fetchPluginListSection: injecting ${plugins.length} plugin(s) into system prompt`);
+    log.debug(`[stavrobot] fetchPluginListSection: injecting ${plugins.length} plugin(s) into system prompt`);
     return lines.join("\n");
   } catch (error) {
-    console.warn("[stavrobot] fetchPluginListSection: failed to fetch plugin list:", error instanceof Error ? error.message : String(error));
+    log.warn("[stavrobot] fetchPluginListSection: failed to fetch plugin list:", error instanceof Error ? error.message : String(error));
     return undefined;
   }
 }
@@ -1195,14 +1200,12 @@ export async function handlePrompt(
   // conversation.
   if (compactionCompletedForAgent === agentId) {
     compactionCompletedForAgent = null;
-    console.log(`[stavrobot] Cleared compaction-completed flag for agent ${agentId}.`);
-    if (STAVROBOT_DEBUG) {
-      console.log(`[stavrobot] [debug] Reloaded ${conversationMessages.length} messages`);
-    }
+    log.debug(`[stavrobot] Cleared compaction-completed flag for agent ${agentId}.`);
+    log.debug(`[stavrobot] [debug] Reloaded ${conversationMessages.length} messages`);
   }
 
   agent.replaceMessages(conversationMessages);
-  console.log(`[stavrobot] Loaded ${conversationMessages.length} messages for agent ${agentId}.`);
+  log.debug(`[stavrobot] Loaded ${conversationMessages.length} messages for agent ${agentId}.`);
 
   const pluginListSection = await fetchPluginListSection();
 
@@ -1253,7 +1256,7 @@ export async function handlePrompt(
       for (const entry of scratchpadTitles) {
         scratchpadLines.push(`[Scratchpad ${entry.id}] ${entry.title}`);
       }
-      console.log(`[stavrobot] Injecting ${scratchpadTitles.length} scratchpad title(s) into system prompt`);
+      log.debug(`[stavrobot] Injecting ${scratchpadTitles.length} scratchpad title(s) into system prompt`);
       systemPrompt = `${systemPrompt}\n\n${scratchpadLines.join("\n")}`;
     }
   } else {
@@ -1290,7 +1293,7 @@ export async function handlePrompt(
       const voiceNote = `[Voice note transcript]: ${transcription}`;
       resolvedMessage = resolvedMessage !== undefined ? `${resolvedMessage}\n${voiceNote}` : voiceNote;
     } else {
-      console.warn("[stavrobot] Audio received but [stt] is not configured; ignoring audio.");
+      log.warn("[stavrobot] Audio received but [stt] is not configured; ignoring audio.");
     }
   }
 
@@ -1318,8 +1321,6 @@ export async function handlePrompt(
   }
 
   const messageToSend = formatUserMessage(resolvedMessage ?? "", source, senderLabel);
-
-  console.log("[stavrobot] Sending message to agent:", messageToSend);
 
   // Filter tools for subagents based on their allowed_tools list. The main
   // agent always gets the full tool set. For subagents, we temporarily swap
@@ -1390,7 +1391,7 @@ export async function handlePrompt(
 
   if (agent.state.error) {
     const errorJson = JSON.stringify(agent.state.error);
-    console.error("[stavrobot] Agent error:", errorJson);
+    log.error("[stavrobot] Agent error:", errorJson);
     // Remove error/aborted assistant messages from in-memory state so the next
     // prompt starts clean. These messages are stripped by the library's
     // transformMessages anyway, but leaving them in state can orphan adjacent
@@ -1423,9 +1424,7 @@ export async function handlePrompt(
     // and never touches agent.state.messages directly.
     const currentMessages = agent.state.messages.slice();
 
-    if (STAVROBOT_DEBUG) {
-      console.log(`[stavrobot] [debug] Compaction triggered: ${currentMessages.length} messages in memory`);
-    }
+    log.debug(`[stavrobot] [debug] Compaction triggered: ${currentMessages.length} messages in memory`);
 
     void (async () => {
       try {
@@ -1441,24 +1440,20 @@ export async function handlePrompt(
 
         // If no user message was found in the tail window, skip compaction for this turn.
         if (cutIndex >= currentMessages.length) {
-          console.warn("[stavrobot] Compaction skipped: no user message found in tail window, no safe cut point found.");
+          log.warn("[stavrobot] Compaction skipped: no user message found in tail window, no safe cut point found.");
           return;
         }
 
         const messagesToCompact = currentMessages.slice(0, cutIndex);
         const messagesToKeep = currentMessages.slice(cutIndex);
 
-        if (STAVROBOT_DEBUG) {
-          console.log(`[stavrobot] [debug] Cut point: index=${cutIndex}, compacting=${messagesToCompact.length}, keeping=${messagesToKeep.length}`);
-          console.log(`[stavrobot] [debug] Last compacted message: role=${messagesToCompact[messagesToCompact.length - 1].role}`);
-          console.log(`[stavrobot] [debug] First kept message: role=${messagesToKeep[0].role}`);
-        }
+        log.debug(`[stavrobot] [debug] Cut point: index=${cutIndex}, compacting=${messagesToCompact.length}, keeping=${messagesToKeep.length}`);
+        log.debug(`[stavrobot] [debug] Last compacted message: role=${messagesToCompact[messagesToCompact.length - 1].role}`);
+        log.debug(`[stavrobot] [debug] First kept message: role=${messagesToKeep[0].role}`);
 
         const serializedMessages = serializeMessagesForSummary(messagesToCompact);
 
-        if (STAVROBOT_DEBUG) {
-          console.log(`[stavrobot] [debug] Serialized input for summarizer (${serializedMessages.length} chars): ${serializedMessages.split("\n")[0]}`);
-        }
+        log.debug(`[stavrobot] [debug] Serialized input for summarizer (${serializedMessages.length} chars): ${serializedMessages.split("\n")[0]}`);
 
         const summarySystemPrompt = config.compactionPrompt;
 
@@ -1503,20 +1498,18 @@ export async function handlePrompt(
           [agentId, previousBoundary],
         );
         if (cutoffResult.rows.length === 0) {
-          console.warn("[stavrobot] Compaction skipped: no cutoff message found for computed boundary.");
+          log.warn("[stavrobot] Compaction skipped: no cutoff message found for computed boundary.");
           return;
         }
         const upToMessageId = cutoffResult.rows[0].id as number;
 
-        if (STAVROBOT_DEBUG) {
-          console.log(`[stavrobot] [debug] Boundary: previousBoundary=${previousBoundary}, keepCount=${keepCount}, upToMessageId=${upToMessageId}`);
-        }
+        log.debug(`[stavrobot] [debug] Boundary: previousBoundary=${previousBoundary}, keepCount=${keepCount}, upToMessageId=${upToMessageId}`);
 
         await saveCompaction(pool, summaryText, upToMessageId, agentId);
-        console.log(`[stavrobot] Background compaction complete: compacted ${messagesToCompact.length} messages, kept ${messagesToKeep.length}.`);
+        log.info(`[stavrobot] Background compaction complete: compacted ${messagesToCompact.length} messages, kept ${messagesToKeep.length}.`);
         compactionCompletedForAgent = agentId;
       } catch (error) {
-        console.error("[stavrobot] Background compaction failed:", error instanceof Error ? error.message : String(error));
+        log.error("[stavrobot] Background compaction failed:", error instanceof Error ? error.message : String(error));
       } finally {
         compactionInProgress = false;
       }

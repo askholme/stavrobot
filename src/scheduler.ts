@@ -5,6 +5,7 @@ import { CronExpressionParser } from "cron-parser";
 import { listCronEntries, deleteCronEntry } from "./database.js";
 import { enqueueMessage } from "./queue.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
+import { log } from "./log.js";
 
 interface ScheduledEntry {
   id: number;
@@ -65,10 +66,10 @@ async function cleanupOldUploads(): Promise<void> {
       const stat = await fs.promises.stat(filePath);
       if (now - stat.mtimeMs > THREE_DAYS_MS) {
         await fs.promises.unlink(filePath);
-        console.log("[stavrobot] Deleted old upload:", filePath);
+        log.info("[stavrobot] Deleted old upload:", filePath);
       }
     } catch (error) {
-      console.error("[stavrobot] Error processing upload file during cleanup:", filePath, error);
+      log.error("[stavrobot] Error processing upload file during cleanup:", filePath, error);
     }
   }
 }
@@ -79,7 +80,7 @@ function tick(): void {
   const toFire = scheduledEntries.filter((entry) => entry.nextFireAt <= now);
 
   if (toFire.length > 0) {
-    console.log(`[stavrobot] Cron tick: firing ${toFire.length} entries (ids: ${toFire.map((e) => e.id).join(", ")})`);
+    log.info(`[stavrobot] Cron tick: firing ${toFire.length} entries (ids: ${toFire.map((e) => e.id).join(", ")})`);
   }
 
   // Update in-memory state synchronously before any async work.
@@ -106,10 +107,10 @@ export async function initializeScheduler(pool: pg.Pool): Promise<void> {
   schedulerPool = pool;
   await loadEntries(pool);
   setInterval(tick, 60_000);
-  console.log(`[stavrobot] Scheduler initialized with ${scheduledEntries.length} entries.`);
+  log.info(`[stavrobot] Scheduler initialized with ${scheduledEntries.length} entries.`);
 }
 
 export async function reloadScheduler(pool: pg.Pool): Promise<void> {
   await loadEntries(pool);
-  console.log(`[stavrobot] Scheduler reloaded with ${scheduledEntries.length} entries.`);
+  log.info(`[stavrobot] Scheduler reloaded with ${scheduledEntries.length} entries.`);
 }
