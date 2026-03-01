@@ -1475,8 +1475,7 @@ export async function handlePrompt(
         const serializedMessages = serializeMessagesForSummary(messagesToCompact);
 
         if (STAVROBOT_DEBUG) {
-          console.log(`[stavrobot] [debug] Serialized input for summarizer (${serializedMessages.length} chars):`);
-          console.log(serializedMessages);
+          console.log(`[stavrobot] [debug] Serialized input for summarizer (${serializedMessages.length} chars): ${serializedMessages.split("\n")[0]}`);
         }
 
         const summarySystemPrompt = config.compactionPrompt;
