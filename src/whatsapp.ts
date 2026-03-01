@@ -13,6 +13,44 @@ import { enqueueMessage } from "./queue.js";
 import { saveAttachment, type FileAttachment } from "./uploads.js";
 import { setWhatsappSocket, getWhatsappSocket, jidToE164, e164ToJid } from "./whatsapp-api.js";
 
+// libsignal (used internally by Baileys) has hardcoded console.info and console.warn
+// calls in session_record.js and session_builder.js that bypass the pino-compatible
+// silent logger we pass to Baileys. These dump session objects (including crypto state)
+// on every session open/close. We intercept console.info and console.warn here and
+// drop the known noisy messages. console.error is intentionally left untouched because
+// libsignal's error logs are operationally useful.
+const LIBSIGNAL_SUPPRESSED_PREFIXES: readonly string[] = [
+  "Closing session",
+  "Opening session",
+  "Removing old closed session",
+  "Migrating session to",
+  "Session already closed",
+  "Session already open",
+  "Closing open session in favor of incoming prekey bundle",
+];
+
+function isLibsignalMessage(args: unknown[]): boolean {
+  return (
+    args.length > 0 &&
+    typeof args[0] === "string" &&
+    LIBSIGNAL_SUPPRESSED_PREFIXES.some((prefix) => (args[0] as string).startsWith(prefix))
+  );
+}
+
+const originalConsoleInfo = console.info.bind(console);
+console.info = (...args: unknown[]): void => {
+  if (!isLibsignalMessage(args)) {
+    originalConsoleInfo(...args);
+  }
+};
+
+const originalConsoleWarn = console.warn.bind(console);
+console.warn = (...args: unknown[]): void => {
+  if (!isLibsignalMessage(args)) {
+    originalConsoleWarn(...args);
+  }
+};
+
 interface SilentLogger {
   level: string;
   child(obj: Record<string, unknown>): SilentLogger;
