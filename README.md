@@ -194,11 +194,20 @@ against the `pages` branch.
 
 ## How to make your own plugin
 
-See [PLUGIN.md](coder/PLUGIN.md) for everything you need to know to create a Stavrobot plugin. The same document works as a reference for both humans and LLMs.
+See [PLUGIN.md](coder/PLUGIN.md) for everything you need to know to create a Stavrobot
+plugin. The same document works as a reference for both humans and LLMs.
 
 ## Recommended plugins
 
-You can find plugins here:
+Plugins are fairly necessary to enable core functionality for the bot, such as the
+ability to "hear" voice notes, send voice notes back, be aware of places around you,
+search the web, etc.
+
+These capabilities are not provided out-of-the-box to give you the ability to customize
+your bot however you want. You should install plugins, though, otherwise you will be
+missing crucial functionality.
+
+You can find some first-party plugins here:
 
 https://github.com/orgs/stavrobot/repositories
 
