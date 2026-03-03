@@ -12,7 +12,19 @@ const CLAUDE_CODE_BASE_URL = "http://coder:3002";
 interface BundleManifest {
   editable?: boolean;
   permissions?: string[];
+  tools?: ToolManifest[];
   [key: string]: unknown;
+}
+
+interface ToolManifest {
+  name: string;
+  parameters?: Record<string, { type: string; description?: string }>;
+  [key: string]: unknown;
+}
+
+interface TransportedFile {
+  filename: string;
+  data: string;
 }
 
 interface PluginRunResult {
@@ -403,6 +415,55 @@ export function createManagePluginsTool(options: { coderEnabled: boolean }): Age
   };
 }
 
+// Resolves parameters declared as type "file" in the tool manifest from file paths
+// to TransportedFile objects. Parameters of other types are passed through unchanged.
+// If the tool is not found in the manifest, parameters are returned as-is.
+async function resolveFileParameters(
+  plugin: string,
+  tool: string,
+  manifest: unknown,
+  parameters: unknown,
+): Promise<unknown> {
+  if (
+    !isBundleManifest(manifest) ||
+    !Array.isArray(manifest.tools) ||
+    typeof parameters !== "object" ||
+    parameters === null
+  ) {
+    return parameters;
+  }
+
+  const toolManifest = manifest.tools.find((t) => t.name === tool);
+  if (toolManifest === undefined || toolManifest.parameters === undefined) {
+    return parameters;
+  }
+
+  const params = parameters as Record<string, unknown>;
+  const resolved: Record<string, unknown> = { ...params };
+
+  for (const [key, schema] of Object.entries(toolManifest.parameters)) {
+    if (schema.type !== "file") continue;
+    const value = params[key];
+    if (typeof value !== "string") continue;
+
+    const resolvedPath = path.resolve(value);
+    const tempDir = path.resolve(TEMP_ATTACHMENTS_DIR);
+    if (!resolvedPath.startsWith(tempDir + path.sep) && resolvedPath !== tempDir) {
+      throw new Error(`File parameter '${key}' path is not under the allowed directory: ${value}`);
+    }
+
+    const data = await fs.readFile(resolvedPath);
+    const transportedFile: TransportedFile = {
+      filename: path.basename(resolvedPath),
+      data: data.toString("base64"),
+    };
+    resolved[key] = transportedFile;
+    log.debug(`[stavrobot] run_plugin_tool: resolved file parameter '${key}' for plugin '${plugin}', tool '${tool}'`);
+  }
+
+  return resolved;
+}
+
 export function createRunPluginToolTool(): AgentTool {
   return {
     name: "run_plugin_tool",
@@ -463,10 +524,12 @@ export function createRunPluginToolTool(): AgentTool {
       // Clear stale files from previous runs.
       await fs.rm(pluginFilesDir, { recursive: true, force: true });
 
+      const resolvedParameters = await resolveFileParameters(plugin, tool, manifest, parsedParameters);
+
       const response = await fetch(`${PLUGIN_RUNNER_BASE_URL}/bundles/${plugin}/tools/${tool}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parsedParameters),
+        body: JSON.stringify(resolvedParameters),
       });
       const responseText = await response.text();
       let result = formatRunPluginToolResult(plugin, tool, responseText, response.status);

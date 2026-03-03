@@ -377,6 +377,8 @@ Each plugin directory contains a `plugin.json` with:
 }
 ```
 
+Parameter types include `string`, `integer`, `number`, `boolean`, and `file`. A `file` parameter signals that the caller will supply a file; the app base64-encodes the file contents and the plugin-runner materializes it to disk before the tool runs.
+
 ### Plugin lifecycle
 
 - **Install:** `POST /install` with `{ url }` — clones the git repo into `/plugins/<name>`, creates a Unix user `plug_<name>`, sets `chmod 700` on the directory.
@@ -389,9 +391,12 @@ Each plugin directory contains a `plugin.json` with:
 
 `POST /bundles/:name/tools/:tool/run` with `{ params, taskId? }`. The plugin-runner:
 1. Reads the plugin manifest.
-2. Runs the tool's entry point as the plugin's Unix user.
-3. For sync tools: waits for completion and returns the result.
-4. For async tools: returns 202 immediately; posts result to `app:3001/chat` on completion.
+2. For any `type: "file"` parameters, decodes the base64-encoded file contents from `params` and writes the file to `/tmp/<plugin_name>/` before spawning the tool. The parameter value passed to the tool on stdin is the resulting file path.
+3. Runs the tool's entry point as the plugin's Unix user.
+4. For sync tools: waits for completion and returns the result.
+5. For async tools: returns 202 immediately; posts result to `app:3001/chat` on completion.
+
+When the main app calls a tool with `type: "file"` parameters, it reads the file from disk and base64-encodes its contents before sending the request to the plugin-runner.
 
 ### Config isolation
 

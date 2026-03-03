@@ -638,6 +638,18 @@ interface TransportedFile {
   data: string;
 }
 
+function isTransportedFile(value: unknown): value is TransportedFile {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 2) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record["filename"] === "string" && typeof record["data"] === "string";
+}
+
 // Scan pluginTempDir for top-level files, base64-encode them, and return the
 // array. Returns an empty array if the directory doesn't exist or is empty.
 // If the total size of all files exceeds MAX_FILE_TRANSPORT_BYTES, logs a
@@ -743,6 +755,55 @@ async function handleRunTool(
   // Make it writable by the plugin user.
   fs.chownSync(pluginTempDir, uid, gid);
 
+  // Attempt to parse the body as JSON and materialize any file parameters into
+  // the temp directory. If parsing fails, pass the raw body through unchanged
+  // so non-JSON tools continue to work.
+  let stdinBody = body;
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(body);
+  } catch {
+    parsedBody = null;
+  }
+
+  if (typeof parsedBody === "object" && parsedBody !== null) {
+    const params = parsedBody as Record<string, unknown>;
+    const fileEntries = Object.entries(params).filter(([, value]) => isTransportedFile(value)) as [string, TransportedFile][];
+
+    if (fileEntries.length > 0) {
+      // Reject if the total decoded size of all input files exceeds the limit.
+      let totalBytes = 0;
+      for (const [, file] of fileEntries) {
+        totalBytes += Buffer.byteLength(file.data, "base64");
+      }
+
+      if (totalBytes > MAX_FILE_TRANSPORT_BYTES) {
+        fs.rmSync(pluginTempDir, { recursive: true, force: true });
+        response.writeHead(413, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: "Input files exceed the maximum allowed size" }));
+        return;
+      }
+
+      for (const [paramName, file] of fileEntries) {
+        const filePath = path.join(pluginTempDir, file.filename);
+        // Reject filenames that escape the temp directory (e.g. "../../../etc/passwd").
+        if (!filePath.startsWith(pluginTempDir + path.sep) && filePath !== pluginTempDir) {
+          fs.rmSync(pluginTempDir, { recursive: true, force: true });
+          response.writeHead(400, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ error: `Invalid filename in file parameter "${paramName}"` }));
+          return;
+        }
+        const fileData = Buffer.from(file.data, "base64");
+        fs.writeFileSync(filePath, fileData);
+        fs.chownSync(filePath, uid, gid);
+        params[paramName] = filePath;
+        console.log(`[stavrobot-plugin-runner] Materialized input file for param "${paramName}": ${filePath} (${fileData.length} bytes)`);
+      }
+
+      stdinBody = JSON.stringify(params);
+    }
+  }
+
   if (manifest.async === true) {
     response.writeHead(202, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ status: "running" }));
@@ -751,7 +812,7 @@ async function handleRunTool(
       const source = `plugin:${bundleName}/${toolName}`;
       let result: ScriptResult;
       try {
-        result = await runScript(entrypoint, toolDir, uid, gid, body, ASYNC_TIMEOUT_MS);
+        result = await runScript(entrypoint, toolDir, uid, gid, stdinBody, ASYNC_TIMEOUT_MS);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`[stavrobot-plugin-runner] Async tool ${bundleName}/${toolName} threw unexpectedly: ${errorMessage}`);
@@ -789,7 +850,7 @@ async function handleRunTool(
     return;
   }
 
-  const result = await runScript(entrypoint, toolDir, uid, gid, body, TOOL_TIMEOUT_MS);
+  const result = await runScript(entrypoint, toolDir, uid, gid, stdinBody, TOOL_TIMEOUT_MS);
 
   if (!result.success) {
     fs.rmSync(pluginTempDir, { recursive: true, force: true });

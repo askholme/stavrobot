@@ -9,6 +9,7 @@ vi.mock("fs/promises", () => ({
     rm: vi.fn().mockResolvedValue(undefined),
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
+    readFile: vi.fn().mockResolvedValue(Buffer.from("file content")),
   },
 }));
 
@@ -41,6 +42,7 @@ describe("createRunPluginToolTool", () => {
     vi.mocked(fs.rm).mockClear().mockResolvedValue(undefined);
     vi.mocked(fs.mkdir).mockClear().mockResolvedValue(undefined);
     vi.mocked(fs.writeFile).mockClear().mockResolvedValue(undefined);
+    vi.mocked(fs.readFile).mockClear().mockResolvedValue(Buffer.from("file content") as unknown as string);
   });
 
   it("formats a successful sync result with string output", async () => {
@@ -224,6 +226,105 @@ describe("createRunPluginToolTool", () => {
     const result = await tool.execute("call-18", { plugin: "myplugin", tool: "mytool", parameters: "{}" });
     const text = (result.content[0] as { type: string; text: string }).text;
     expect(text).toBe('The run of tool "mytool" (plugin "myplugin") returned:\n```\ndone\n```');
+  });
+
+  it("resolves file parameters to TransportedFile objects before sending to plugin-runner", async () => {
+    const fileContent = Buffer.from("audio data");
+    vi.mocked(fs.readFile).mockResolvedValueOnce(fileContent as unknown as string);
+    const filePath = path.join(TEMP_ATTACHMENTS_DIR, "upload-abc.ogg");
+    const manifest = {
+      name: "myplugin",
+      permissions: ["*"],
+      tools: [{ name: "mytool", parameters: { audio: { type: "file", description: "Audio file" } } }],
+    };
+    mockFetchSequence(
+      { status: 200, body: JSON.stringify(manifest) },
+      { status: 200, body: JSON.stringify({ success: true, output: "done" }) },
+    );
+    await tool.execute("call-file-1", { plugin: "myplugin", tool: "mytool", parameters: JSON.stringify({ audio: filePath }) });
+    expect(vi.mocked(fs.readFile)).toHaveBeenCalledWith(filePath);
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const runCallBody = JSON.parse((fetchMock.mock.calls[1][1] as { body: string }).body) as { audio: { filename: string; data: string } };
+    expect(runCallBody.audio).toEqual({
+      filename: "upload-abc.ogg",
+      data: fileContent.toString("base64"),
+    });
+  });
+
+  it("does not modify non-file parameters when resolving file parameters", async () => {
+    const fileContent = Buffer.from("audio data");
+    vi.mocked(fs.readFile).mockResolvedValueOnce(fileContent as unknown as string);
+    const filePath = path.join(TEMP_ATTACHMENTS_DIR, "upload-abc.ogg");
+    const manifest = {
+      name: "myplugin",
+      permissions: ["*"],
+      tools: [{ name: "mytool", parameters: { audio: { type: "file" }, label: { type: "string" } } }],
+    };
+    mockFetchSequence(
+      { status: 200, body: JSON.stringify(manifest) },
+      { status: 200, body: JSON.stringify({ success: true, output: "done" }) },
+    );
+    await tool.execute("call-file-2", { plugin: "myplugin", tool: "mytool", parameters: JSON.stringify({ audio: filePath, label: "my label" }) });
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const runCallBody = JSON.parse((fetchMock.mock.calls[1][1] as { body: string }).body) as { audio: { filename: string; data: string }; label: string };
+    expect(runCallBody.label).toBe("my label");
+    expect(runCallBody.audio.filename).toBe("upload-abc.ogg");
+  });
+
+  it("rejects file parameters whose path is not under TEMP_ATTACHMENTS_DIR", async () => {
+    const manifest = {
+      name: "myplugin",
+      permissions: ["*"],
+      tools: [{ name: "mytool", parameters: { audio: { type: "file" } } }],
+    };
+    mockFetchSequence(
+      { status: 200, body: JSON.stringify(manifest) },
+    );
+    await expect(
+      tool.execute("call-file-3", { plugin: "myplugin", tool: "mytool", parameters: JSON.stringify({ audio: "/etc/passwd" }) }),
+    ).rejects.toThrow("not under the allowed directory");
+  });
+
+  it("rejects path traversal attempts in file parameters", async () => {
+    const manifest = {
+      name: "myplugin",
+      permissions: ["*"],
+      tools: [{ name: "mytool", parameters: { audio: { type: "file" } } }],
+    };
+    mockFetchSequence(
+      { status: 200, body: JSON.stringify(manifest) },
+    );
+    const traversalPath = path.join(TEMP_ATTACHMENTS_DIR, "../../../etc/passwd");
+    await expect(
+      tool.execute("call-file-4", { plugin: "myplugin", tool: "mytool", parameters: JSON.stringify({ audio: traversalPath }) }),
+    ).rejects.toThrow("not under the allowed directory");
+  });
+
+  it("passes parameters as-is when the tool is not found in the manifest", async () => {
+    const manifest = {
+      name: "myplugin",
+      permissions: ["*"],
+      tools: [{ name: "othertool", parameters: { audio: { type: "file" } } }],
+    };
+    mockFetchSequence(
+      { status: 200, body: JSON.stringify(manifest) },
+      { status: 200, body: JSON.stringify({ success: true, output: "done" }) },
+    );
+    await tool.execute("call-file-5", { plugin: "myplugin", tool: "mytool", parameters: JSON.stringify({ audio: "/some/path" }) });
+    expect(vi.mocked(fs.readFile)).not.toHaveBeenCalled();
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const runCallBody = JSON.parse((fetchMock.mock.calls[1][1] as { body: string }).body) as { audio: string };
+    expect(runCallBody.audio).toBe("/some/path");
+  });
+
+  it("passes parameters as-is when the manifest has no tools array", async () => {
+    const manifest = { name: "myplugin", permissions: ["*"] };
+    mockFetchSequence(
+      { status: 200, body: JSON.stringify(manifest) },
+      { status: 200, body: JSON.stringify({ success: true, output: "done" }) },
+    );
+    await tool.execute("call-file-6", { plugin: "myplugin", tool: "mytool", parameters: JSON.stringify({ audio: "/some/path" }) });
+    expect(vi.mocked(fs.readFile)).not.toHaveBeenCalled();
   });
 });
 

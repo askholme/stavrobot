@@ -190,7 +190,7 @@ Each tool subdirectory contains its own `manifest.json`:
 - `description` (string, required): Shown when inspecting the plugin.
 - `entrypoint` (string, required): The filename of the executable script inside the tool directory.
 - `async` (boolean, optional, defaults to false): If true, the tool runs asynchronously and the result is delivered via callback instead of inline.
-- `parameters` (object, required): Parameter schema. Each key is a parameter name; each value has `type` (`string`, `integer`, `number`, or `boolean`) and `description`. Use an empty object `{}` if the tool takes no parameters.
+- `parameters` (object, required): Parameter schema. Each key is a parameter name; each value has `type` (`string`, `integer`, `number`, `boolean`, or `file`) and `description`. Use an empty object `{}` if the tool takes no parameters. See "Receiving files" for how `file` parameters work.
 
 ### Async tools
 
@@ -242,6 +242,68 @@ def main() -> None:
     tts = gTTS(params["text"])
     tts.save(output_dir / "output.mp3")
     json.dump({"file": "output.mp3"}, sys.stdout)
+
+
+main()
+```
+
+## Receiving files
+
+Tools can declare parameters with `"type": "file"` to receive a file from the caller. At runtime, the parameter value in the JSON on stdin will be a file path (e.g., `/tmp/my-plugin/voice-note.ogg`). The plugin-runner materializes the file into the plugin's temp directory (`/tmp/<plugin_name>/`) before the tool starts, so the file is ready to read when the tool runs.
+
+Rules:
+
+- The same `/tmp/<plugin_name>/` directory is used for both input and output files. Input files are written before the tool runs; output files are scanned after.
+- The directory is cleared before each tool run, so input files from a previous run are not present.
+- The same 25 MB size limit applies to input files.
+
+### Example: a tool that receives an audio file
+
+Tool manifest:
+
+```json
+{
+  "name": "transcribe",
+  "description": "Transcribe an audio file.",
+  "entrypoint": "run.py",
+  "parameters": {
+    "audio": {
+      "type": "file",
+      "description": "The audio file to transcribe."
+    }
+  }
+}
+```
+
+Tool entrypoint:
+
+```python
+#!/usr/bin/env -S uv run
+# /// script
+# dependencies = ["openai-whisper"]
+# ///
+
+import json
+import sys
+from pathlib import Path
+
+
+KNOWN_PARAMS = {"audio"}
+
+
+def main() -> None:
+    """Transcribe an audio file passed as a file path."""
+    params = json.load(sys.stdin)
+    unknown = set(params) - KNOWN_PARAMS
+    if unknown:
+        print(f"Unknown parameters: {', '.join(sorted(unknown))}", file=sys.stderr)
+        sys.exit(1)
+
+    import whisper
+
+    model = whisper.load_model("base")
+    result = model.transcribe(params["audio"])
+    json.dump({"text": result["text"]}, sys.stdout)
 
 
 main()
