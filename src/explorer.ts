@@ -250,7 +250,7 @@ const EXPLORER_PAGE_HTML = `<!DOCTYPE html>
     th:hover { background: #f0f0f0; }
     th .sort-indicator { margin-left: 4px; color: #999; }
     tbody tr { cursor: pointer; transition: background 0.15s ease; }
-    tbody tr:hover td {
+    tbody tr.expanded td {
       background: #fafafa;
       white-space: pre-wrap;
       word-break: break-word;
@@ -435,6 +435,7 @@ const EXPLORER_PAGE_HTML = `<!DOCTYPE html>
     let currentOrderBy = null;
     let currentOrderDirection = "asc";
     let currentColumns = [];
+    let clickTimer = null;
 
     async function loadTables() {
       const response = await fetch("/api/explorer/tables");
@@ -573,8 +574,8 @@ const EXPLORER_PAGE_HTML = `<!DOCTYPE html>
       }).join("");
 
       const bodyEl = document.getElementById("table-body");
-      bodyEl.innerHTML = data.rows.map((row, rowIndex) => \`
-        <tr onclick="handleRowClick(this, \${rowIndex})">\${row.map(cell => \`<td>\${formatCell(cell)}</td>\`).join("")}</tr>
+      bodyEl.innerHTML = data.rows.map((row) => \`
+        <tr onclick="handleRowClick(this)">\${row.map(cell => \`<td>\${formatCell(cell)}</td>\`).join("")}</tr>
       \`).join("");
 
       // Store row data on each tr element so the modal can access it without re-fetching.
@@ -603,8 +604,17 @@ const EXPLORER_PAGE_HTML = `<!DOCTYPE html>
       loadTableData();
     }
 
-    function handleRowClick(row, rowIndex) {
-      openRowModal(row._rowData);
+    function handleRowClick(row) {
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+        row.classList.toggle("expanded");
+      } else {
+        clickTimer = setTimeout(() => {
+          clickTimer = null;
+          openRowModal(row._rowData);
+        }, 300);
+      }
     }
 
     function openRowModal(rowData) {
