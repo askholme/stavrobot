@@ -1267,6 +1267,7 @@ export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent>
     initialState: {
       systemPrompt: effectiveBasePrompt,
       model,
+      thinkingLevel: "off",
       tools: tools.map(wrapToolWithLogging),
       messages: [],
     },
