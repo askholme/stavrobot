@@ -315,7 +315,7 @@ describe("steering", () => {
     const steerResult = await enqueueMessage("steer me", "signal", "+1234567890");
     expect(steerResult).toBe("Message received, steering the current request.");
     expect(mockSteer).toHaveBeenCalledOnce();
-    expect(mockFormatUserMessage).toHaveBeenCalledWith("steer me", "signal", "+1234567890");
+    expect(mockFormatUserMessage).toHaveBeenCalledWith("steer me", "signal", "owner");
     // The original prompt should still complete normally.
     await promptPromise;
     expect(mockHandlePrompt).toHaveBeenCalledOnce();
@@ -335,7 +335,7 @@ describe("steering", () => {
     const steerResult = await enqueueMessage("steer me");
     expect(steerResult).toBe("Message received, steering the current request.");
     expect(mockSteer).toHaveBeenCalledOnce();
-    expect(mockFormatUserMessage).toHaveBeenCalledWith("steer me", undefined, undefined);
+    expect(mockFormatUserMessage).toHaveBeenCalledWith("steer me", undefined, "owner");
 
     await promptPromise;
   });

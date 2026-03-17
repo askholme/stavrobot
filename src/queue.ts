@@ -279,7 +279,7 @@ export function enqueueMessage(
   }
 
   if (processing && message !== undefined && isCurrentEntryOwnerConversation() && isInteractiveOwnerMessage(source, sender)) {
-    const formatted = formatUserMessage(message, source, sender);
+    const formatted = formatUserMessage(message, source, "owner");
     const agentMessage: AgentMessage = {
       role: "user",
       content: [{ type: "text", text: formatted }],
