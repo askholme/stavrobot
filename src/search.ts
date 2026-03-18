@@ -3,6 +3,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { EmbeddingsConfig } from "./config.js";
 import { fetchEmbeddings, extractText } from "./embeddings.js";
+import { getMainAgentId } from "./database.js";
 import { encodeToToon } from "./toon.js";
 import { log } from "./log.js";
 
@@ -129,10 +130,13 @@ export function createSearchTool(pool: pg.Pool, embeddingsConfig?: EmbeddingsCon
       // be triggered by casting the whole blob (which includes metadata, model
       // info, usage stats, etc.). User messages may store their inner content as
       // a plain string; assistant messages store it as an array of typed parts.
+      const mainAgentId = getMainAgentId();
+
       const fullTextResult = await pool.query<MessageRow>(
         `SELECT m.id, m.role, m.content, m.created_at
          FROM messages m
          WHERE m.role IN ('user', 'assistant')
+           AND m.agent_id = $3
            AND to_tsvector('english',
              CASE
                WHEN jsonb_typeof(m.content->'content') = 'string' THEN m.content->>'content'
@@ -146,7 +150,7 @@ export function createSearchTool(pool: pg.Pool, embeddingsConfig?: EmbeddingsCon
            ) @@ plainto_tsquery('english', $1)
          ORDER BY m.created_at DESC
          LIMIT $2`,
-        [query, limit],
+        [query, limit, mainAgentId],
       );
       log.debug(`[stavrobot] search: messages full-text returned ${fullTextResult.rows.length} match(es)`);
 
@@ -171,9 +175,10 @@ export function createSearchTool(pool: pg.Pool, embeddingsConfig?: EmbeddingsCon
              FROM messages m
              JOIN message_embeddings me ON me.message_id = m.id
              WHERE m.role IN ('user', 'assistant')
+               AND m.agent_id = $3
              ORDER BY me.embedding <=> $1
              LIMIT $2`,
-            [queryVector, limit],
+            [queryVector, limit, mainAgentId],
           );
           log.debug(`[stavrobot] search: messages semantic returned ${semanticResult.rows.length} match(es)`);
 

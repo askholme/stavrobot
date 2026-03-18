@@ -1,5 +1,6 @@
 import pg from "pg";
 import type { Config } from "./config.js";
+import { getMainAgentId } from "./database.js";
 import { log } from "./log.js";
 
 const POLL_INTERVAL_MS = 10_000;
@@ -73,7 +74,7 @@ export function extractText(content: unknown): string {
     .join("\n");
 }
 
-async function tick(pool: pg.Pool, apiKey: string, onSuccess: () => void, onError: () => void): Promise<void> {
+async function tick(pool: pg.Pool, apiKey: string, mainAgentId: number, onSuccess: () => void, onError: () => void): Promise<void> {
   // Pre-pass: scan the next PRE_PASS_LIMIT un-embedded messages and zero-vector
   // any that have no text content (e.g. pure tool_use assistant messages). This
   // ensures the subsequent BATCH_SIZE fetch is filled with embeddable messages.
@@ -83,9 +84,10 @@ async function tick(pool: pg.Pool, apiKey: string, onSuccess: () => void, onErro
      LEFT JOIN message_embeddings me ON me.message_id = m.id
      WHERE m.role IN ('user', 'assistant')
        AND me.message_id IS NULL
+       AND m.agent_id = $2
      ORDER BY m.id ASC
      LIMIT $1`,
-    [PRE_PASS_LIMIT],
+    [PRE_PASS_LIMIT, mainAgentId],
   );
 
   if (prePassResult.rows.length === 0) {
@@ -117,9 +119,10 @@ async function tick(pool: pg.Pool, apiKey: string, onSuccess: () => void, onErro
      LEFT JOIN message_embeddings me ON me.message_id = m.id
      WHERE m.role IN ('user', 'assistant')
        AND me.message_id IS NULL
+       AND m.agent_id = $2
      ORDER BY m.id ASC
      LIMIT $1`,
-    [BATCH_SIZE],
+    [BATCH_SIZE, mainAgentId],
   );
 
   if (result.rows.length === 0) {
@@ -211,6 +214,7 @@ export function initializeEmbeddingsWorker(pool: pg.Pool, config: Config): void 
   }
 
   const apiKey = config.embeddings.apiKey;
+  const mainAgentId = getMainAgentId();
   let currentIntervalMs = POLL_INTERVAL_MS;
   let intervalHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -222,6 +226,7 @@ export function initializeEmbeddingsWorker(pool: pg.Pool, config: Config): void 
       void tick(
         pool,
         apiKey,
+        mainAgentId,
         () => {
           if (currentIntervalMs !== POLL_INTERVAL_MS) {
             currentIntervalMs = POLL_INTERVAL_MS;
