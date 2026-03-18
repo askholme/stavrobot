@@ -1,6 +1,6 @@
 import fs from "fs";
 import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
-import { getOAuthApiKey } from "@mariozechner/pi-ai/oauth";
+import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 import type { Config } from "./config.js";
 import { log } from "./log.js";
 
@@ -47,19 +47,30 @@ export async function getApiKey(config: Config): Promise<string> {
         throw readError;
       }
 
-      const result = await getOAuthApiKey(config.provider, credentials);
-      if (result === null) {
+      const provider = getOAuthProvider(config.provider);
+      if (provider === undefined) {
+        throw new AuthError(`Unknown OAuth provider "${config.provider}".`);
+      }
+
+      let providerCredentials = credentials[config.provider];
+      if (providerCredentials === undefined) {
         throw new AuthError(`No OAuth credentials found for provider "${config.provider}" in ${authFile}. Run the Pi coding agent /login command to authenticate.`);
       }
 
-      credentials[config.provider] = result.newCredentials;
-      fs.writeFileSync(authFile, JSON.stringify(credentials, null, 2));
+      log.debug(`[stavrobot] OAuth token state: refresh=...${providerCredentials.refresh.slice(-8)}, access=...${providerCredentials.access.slice(-8)}, expires=${providerCredentials.expires}`);
+
+      if (Date.now() >= providerCredentials.expires) {
+        providerCredentials = await provider.refreshToken(providerCredentials);
+        credentials[config.provider] = providerCredentials;
+        fs.writeFileSync(authFile, JSON.stringify(credentials, null, 2));
+        log.debug(`[stavrobot] OAuth token refreshed: refresh=...${providerCredentials.refresh.slice(-8)}, access=...${providerCredentials.access.slice(-8)}, expires=${providerCredentials.expires}`);
+      }
 
       if (attempt > 0) {
         log.info(`[stavrobot] OAuth token resolved after ${attempt + 1} attempts.`);
       }
 
-      return result.apiKey;
+      return provider.getApiKey(providerCredentials);
     } catch (error) {
       lastError = error;
       const errorMessage = error instanceof Error ? error.message : String(error);
