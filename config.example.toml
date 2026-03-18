@@ -125,3 +125,7 @@ model = "sonnet"
 # the agent can use to find more relevant messages.
 # [embeddings]
 # apiKey = "your-openai-api-key-here"
+
+# Feature flags. All flags are optional and default to disabled.
+# [featureFlags]
+# autoSearch = true  # Automatically run a web search before responding to messages.

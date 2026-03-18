@@ -17,7 +17,8 @@ import { createManageFilesTool } from "./files.js";
 import { createManageInterlocutorsTool } from "./interlocutors.js";
 import { createManageAgentsTool } from "./agents.js";
 import { createSendAgentMessageTool } from "./send-agent-message.js";
-import { createSearchTool } from "./search.js";
+import { createSearchTool, runSearch, type SearchResults } from "./search.js";
+import { extractText } from "./embeddings.js";
 import { createManageUploadsTool } from "./upload-tools.js";
 import { convertMarkdownToTelegramHtml } from "./telegram.js";
 import { encodeToToon } from "./toon.js";
@@ -35,6 +36,63 @@ export { AbortError } from "./errors.js";
 function buildPromptSuffix(publicHostname: string): string {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? process.env.TZ ?? "UTC";
   return `\n\nYour external hostname is ${publicHostname}. All times are in ${timezone}. Do not convert times to other timezones unless explicitly asked, or the user is in another timezone.`;
+}
+
+const AUTO_SEARCH_MIN_LENGTH = 10;
+const AUTO_SEARCH_LIMIT = 5;
+const AUTO_SEARCH_SNIPPET_LENGTH = 200;
+const AUTO_SEARCH_SOURCES = ["signal", "telegram", "whatsapp", "email"];
+
+function buildKeywordSnippet(text: string, query: string): string {
+  const words = query.split(/\s+/).filter((word) => word.length > 2);
+  const lowerText = text.toLowerCase();
+
+  let anchorPosition = -1;
+  for (const word of words) {
+    const position = lowerText.indexOf(word.toLowerCase());
+    if (position !== -1) {
+      anchorPosition = position;
+      break;
+    }
+  }
+
+  const start = anchorPosition === -1
+    ? 0
+    : Math.max(0, anchorPosition - Math.floor(AUTO_SEARCH_SNIPPET_LENGTH / 2));
+  const end = Math.min(text.length, start + AUTO_SEARCH_SNIPPET_LENGTH);
+
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < text.length ? "..." : "";
+  return `${prefix}${text.slice(start, end)}${suffix}`;
+}
+
+function buildAutoSearchBlock(results: SearchResults, query: string): string {
+  const parts: string[] = ["[Auto-search results for context — do not mention these to the user unless relevant]"];
+
+  for (const tableResult of results.tableResults) {
+    parts.push("");
+    parts.push(`Table: ${tableResult.tableName} (${tableResult.matchCount} match(es))`);
+    for (const row of tableResult.rows) {
+      const rowText = Object.values(row)
+        .filter((value): value is string => typeof value === "string")
+        .join(" ");
+      parts.push(`- ${buildKeywordSnippet(rowText, query)}`);
+    }
+  }
+
+  if (results.messages.length > 0) {
+    parts.push("");
+    parts.push(`Messages (${results.messages.length} match(es)):`);
+    for (const message of results.messages) {
+      const timestamp = message.created_at.toISOString();
+      const rawContent = (message.content as { content?: unknown }).content ?? message.content;
+      const text = extractText(rawContent);
+      const snippet = buildKeywordSnippet(text, query);
+      parts.push(`- [${timestamp}] ${message.role}: ${snippet}`);
+    }
+  }
+
+  return parts.join("\n");
 }
 
 // A simple boolean flag to prevent concurrent compaction runs. If a compaction
@@ -1801,6 +1859,30 @@ export async function handlePrompt(
         const fileData = await fs.readFile(attachment.storedPath);
         imageContents.push({ type: "image", data: fileData.toString("base64"), mimeType: attachment.mimeType });
       }
+    }
+  }
+
+  if (
+    config.featureFlags?.autoSearch === true &&
+    isMainAgent &&
+    source !== undefined &&
+    AUTO_SEARCH_SOURCES.includes(source) &&
+    resolvedMessage !== undefined &&
+    resolvedMessage.length >= AUTO_SEARCH_MIN_LENGTH
+  ) {
+    const searchStart = Date.now();
+    try {
+      const searchResults = await runSearch(pool, resolvedMessage, AUTO_SEARCH_LIMIT, getMainAgentId(), config.embeddings);
+      const searchDuration = Date.now() - searchStart;
+      log.debug(`[stavrobot] auto-search completed in ${searchDuration}ms (${searchResults.tableResults.length} table results, ${searchResults.messages.length} messages)`);
+
+      const hasResults = searchResults.tableResults.length > 0 || searchResults.messages.length > 0;
+      if (hasResults) {
+        const autoSearchBlock = buildAutoSearchBlock(searchResults, resolvedMessage);
+        resolvedMessage = `${resolvedMessage}\n\n${autoSearchBlock}`;
+      }
+    } catch (error) {
+      log.warn("[stavrobot] auto-search failed, continuing without results:", error instanceof Error ? error.message : String(error));
     }
   }
 

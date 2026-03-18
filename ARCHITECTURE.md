@@ -11,12 +11,12 @@ arbitrary scripts in isolated Unix user accounts.
 
 | Service | Image / Build | Port | Role |
 |---|---|---|---|
-| `postgres` | `postgres:17` | internal | Primary database |
+| `postgres` | `pgvector/pgvector:pg17` | internal | Primary database (with pgvector extension) |
 | `app` | `./Dockerfile` | 10567→3000 | Main HTTP server + LLM agent |
 | `plugin-runner` | `./plugin-runner` | internal:3003 | Executes plugin scripts |
 | `coder` | `./coder` | internal:3002 | Runs `claude -p` for plugin authoring |
 | `python-runner` | `./python-runner` | internal | Executes Python snippets |
-| `pg-backup` | `postgres:17` | — | Hourly pg_dump to `./data/db-backups` |
+| `pg-backup` | `pgvector/pgvector:pg17` | — | Hourly pg_dump to `./data/db-backups` |
 | `signal-bridge` | `./signal-bridge` | internal:8081 | Signal protocol bridge (optional profile) |
 
 All containers share `./data/main` (read-only) for `config.toml`. The `plugin-runner`
@@ -32,14 +32,19 @@ External caller (Telegram / Signal / WhatsApp / email / CLI)
   → handleChatRequest  (src/index.ts)
   → enqueueMessage  (src/queue.ts)
   → processQueue  (single-threaded, serialises all turns)
+  → resolveTargetAgent  (allowlist + interlocutor lookup)
   → handlePrompt  (src/agent.ts)
-  → Agent.complete  (@mariozechner/pi-agent-core)
+  → Agent.prompt  (@mariozechner/pi-agent-core)
   → tool callbacks (execute_sql, manage_plugins, run_plugin_tool, …)
   → response string returned to caller
 ```
 
 Owner messages arriving while a turn is in progress are **steered** into the running
 turn via `Agent.steer()` rather than queued. Non-owner messages are always queued.
+
+The queue is a plain in-memory array (`queue: QueueEntry[]`) with a single `processing`
+boolean flag. It is strictly single-threaded — only one `handlePrompt` call runs at a
+time. Retries: up to 3 attempts with a 30-second delay between them.
 
 ---
 
@@ -69,6 +74,78 @@ is sent before the init script runs. The source is `plugin:<plugin>/init`.
 
 All three callback paths re-enter the queue via `POST /chat` with Basic Auth using the
 app password. The `source` field routes them to the main agent's conversation.
+
+---
+
+## Agent setup (src/agent.ts)
+
+The single `Agent` instance is created in `createAgent()` and shared across all
+conversations. Per-turn, `handlePrompt()` swaps the conversation history via
+`agent.replaceMessages()` and sets the system prompt via `agent.setSystemPrompt()`.
+
+### System prompt assembly (per turn)
+- **Main agent**: `baseSystemPrompt` + optional `customPrompt` + timezone/hostname suffix
+  + injected memories (full text) + scratchpad titles + plugin list.
+- **Subagent**: `baseAgentPrompt` + timezone/hostname suffix + filtered plugin list
+  (only plugins the subagent has access to, with tool-level detail) + subagent's own
+  `system_prompt` from the DB.
+
+### Tool filtering for subagents
+Subagents have `allowed_tools TEXT[]` and `allowed_plugins TEXT[]` in the DB.
+`filterToolsForSubagent()` wraps tool `execute` functions to enforce action-level
+restrictions (e.g. `"manage_interlocutors.list"` allows only the `list` action).
+`run_plugin_tool` is controlled exclusively by `allowed_plugins`, not `allowed_tools`.
+The main agent (id=1) always has `allowed_tools = '{*}'` and `allowed_plugins = '{*}'`.
+
+### Context compaction
+After every turn where `messages.length > 40`, a background task (non-blocking) runs
+`complete()` with the compaction prompt to summarise the oldest messages. The summary is
+stored in `compactions` and prepended as a synthetic user message on the next load.
+A `compactionInProgress` boolean prevents concurrent compaction runs.
+
+### Context truncation
+`truncateContext()` trims the largest text blocks first (by character count) to fit
+within 80% of the model's context window. Applied via `transformContext` callback on
+every `Agent.prompt()` call.
+
+---
+
+## Built-in tools (src/agent.ts)
+
+| Tool name | Always present | Conditional |
+|---|---|---|
+| `execute_sql` | ✓ | |
+| `manage_knowledge` | ✓ | |
+| `manage_cron` | ✓ | |
+| `run_python` | ✓ | |
+| `manage_pages` | ✓ | |
+| `manage_uploads` | ✓ | |
+| `db_search` | ✓ | |
+| `manage_files` | ✓ | |
+| `manage_interlocutors` | ✓ | |
+| `manage_agents` | ✓ | |
+| `send_agent_message` | ✓ | |
+| `manage_plugins` | ✓ | |
+| `run_plugin_tool` | ✓ | |
+| `request_coding_task` | | `config.coder` present |
+| `send_signal_message` | ✓ | |
+| `send_telegram_message` | | `config.telegram` present |
+| `send_whatsapp_message` | | `config.whatsapp` present |
+| `send_email` | | `config.email.smtpHost` present |
+
+All tools are wrapped by `wrapToolWithLogging()` which logs the tool name, truncated
+params, and truncated result at `info` level.
+
+### db_search tool (src/search.ts)
+- Tool name: `db_search`.
+- Searches all public tables with text-like columns via PostgreSQL full-text search
+  (`to_tsvector` / `plainto_tsquery`). Excludes `messages` and `compactions` tables
+  from the table scan.
+- Searches `messages` separately with a JSONB-aware text extraction query.
+- If `config.embeddings` is present (OpenAI API key), also runs a semantic vector
+  search on `message_embeddings` and merges results via Reciprocal Rank Fusion (RRF,
+  k=60).
+- Default limit: 10 rows per table; max: 20.
 
 ---
 
@@ -117,6 +194,8 @@ Plugins live in `/plugins/<name>/` (shared volume between `plugin-runner` and `c
 - Checked on every tool run (read fresh from disk, no restart needed).
 - The LLM cannot modify permissions; the `configure` action strips the `permissions`
   key before forwarding to `plugin-runner`.
+- Plugins with an empty `permissions` array are hidden from the agent entirely (treated
+  as not found in both `manage_plugins show` and `run_plugin_tool`).
 
 ---
 
@@ -124,15 +203,16 @@ Plugins live in `/plugins/<name>/` (shared volume between `plugin-runner` and `c
 
 | Table | Purpose |
 |---|---|
-| `messages` | Per-agent conversation history (role, content JSONB) |
-| `memories` | Always-injected knowledge (short facts) |
-| `compactions` | Summarised history snapshots |
-| `scratchpad` | On-demand knowledge (title injected, body fetched on read) |
-| `cron` | Scheduled entries (cron expression or one-shot fire_at) |
+| `messages` | Per-agent conversation history (role, content JSONB, sender_identity_id, sender_agent_id) |
+| `memories` | Always-injected knowledge (short facts, full text in system prompt every turn) |
+| `compactions` | Summarised history snapshots (up_to_message_id boundary) |
+| `scratchpad` | On-demand knowledge (title injected, body fetched on read via manage_knowledge) |
+| `cron_entries` | Scheduled entries (cron expression or one-shot fire_at) |
 | `pages` | LLM-authored pages (path, mimetype, data BYTEA, is_public, queries JSONB, version INTEGER); append-only versioning — each update inserts a new row; empty `data` is a tombstone |
-| `agents` | Subagent definitions (name, system prompt, tool whitelist) |
-| `interlocutors` | Contact records (display name, assigned agent) |
-| `interlocutor_identities` | Per-channel identifiers (signal/telegram/whatsapp/email) |
+| `agents` | Subagent definitions (name, system_prompt, allowed_tools TEXT[], allowed_plugins TEXT[]) |
+| `interlocutors` | Contact records (display_name, owner bool, enabled bool, agent_id FK) |
+| `interlocutor_identities` | Per-channel identifiers (service, identifier; nullable for soft-delete) |
+| `message_embeddings` | OpenAI vector embeddings for semantic search (vector(1536)) |
 
 Schema is initialised at startup via `initializeSchema*` functions in `src/database.ts`.
 Migrations are additive `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements.
@@ -153,6 +233,21 @@ Migrations are additive `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements.
 
 ---
 
+## Allowlist (src/allowlist.ts)
+
+- Stored in `allowlist.json` (path overridable via `ALLOWLIST_PATH` env var).
+- Per-service arrays: `signal` (strings), `telegram` (numbers or `"*"`), `whatsapp`
+  (strings), `email` (strings, supports `*` glob wildcard before `@`).
+- Owner identities are auto-seeded into the allowlist from `config.toml` on startup.
+- The allowlist is a **hard gate** in the queue: messages from senders not in the list
+  are silently dropped before reaching the agent.
+- A **soft gate** follows: the sender must also exist in `interlocutor_identities` for
+  an enabled interlocutor with an assigned agent.
+- Outbound send tools (`send_signal_message`, `send_telegram_message`, etc.) also check
+  the allowlist before sending.
+
+---
+
 ## Configuration
 
 - Runtime config: `config.toml` (path overridable via `CONFIG_PATH` env var).
@@ -161,6 +256,13 @@ Migrations are additive `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements.
   `PGPASSWORD`, `PGDATABASE`).
 - Log level: `STAVROBOT_LOG_LEVEL` env var (`error`/`warn`/`info`/`debug`; default `info`).
 - Debug mode: `STAVROBOT_DEBUG=1` env var.
+- Feature gates in `config.toml` (presence of section enables the feature):
+  - `[coder]` — enables `request_coding_task` tool and `manage_plugins create` action.
+  - `[telegram]` — enables Telegram webhook + `send_telegram_message` tool.
+  - `[whatsapp]` — enables WhatsApp (Baileys) + `send_whatsapp_message` tool.
+  - `[email]` with `smtpHost` — enables `send_email` tool and SMTP transport.
+  - `[embeddings]` — enables OpenAI vector embeddings worker and semantic search in `db_search`.
+  - `[signal]` — enables Signal bridge integration (separate Docker profile).
 
 ---
 
@@ -189,16 +291,21 @@ allowlist + interlocutor lookup to determine the target agent.
 
 | File | Role |
 |---|---|
-| `src/index.ts` | HTTP server, routing, auth middleware |
-| `src/agent.ts` | Agent setup, all built-in tool definitions, `handlePrompt` |
-| `src/queue.ts` | Single-threaded message queue, steering logic, retry |
+| `src/index.ts` | HTTP server, routing, auth middleware, all endpoint handlers |
+| `src/agent.ts` | Agent setup, all built-in tool definitions, `handlePrompt`, compaction, truncation |
+| `src/queue.ts` | Single-threaded message queue, routing, steering logic, retry |
 | `src/database.ts` | All SQL queries, schema init, migrations |
-| `src/config.ts` | Config loading and validation |
+| `src/config.ts` | Config loading and validation; loads prompt files |
+| `src/search.ts` | `db_search` tool: full-text + optional semantic search with RRF merge |
 | `src/plugin-tools.ts` | `manage_plugins`, `run_plugin_tool`, `request_coding_task` tools |
-| `src/queue.ts` | Message serialisation and routing |
+| `src/allowlist.ts` | Allowlist load/save/check; email glob matching |
 | `src/scheduler.ts` | Cron scheduler |
-| `src/log.ts` | Levelled logger (`log.info`, `log.debug`, etc.) |
-| `plugin-runner/src/index.ts` | Plugin HTTP server (1784 lines, all logic in one file) |
+| `src/embeddings.ts` | OpenAI embeddings worker (background polling loop) |
+| `src/log.ts` | Levelled logger (`log.info`, `log.debug`, etc.) controlled by `STAVROBOT_LOG_LEVEL` |
+| `prompts/system-prompt.txt` | Base system prompt for the main agent |
+| `prompts/agent-prompt.txt` | Base system prompt for subagents |
+| `prompts/compaction-prompt.txt` | Prompt used by the background compaction summariser |
+| `plugin-runner/src/index.ts` | Plugin HTTP server (all logic in one file) |
 | `coder/server.py` | Coder HTTP server, `claude -p` subprocess management |
 
 ---
