@@ -234,7 +234,7 @@ export function createSearchTool(pool: pg.Pool, embeddingsConfig?: EmbeddingsCon
           // stored by the embeddings worker), or a plain string/array.
           const rawContent = (message.content as { content?: unknown }).content ?? message.content;
           const text = extractText(rawContent);
-          parts.push(`[${timestamp}] ${message.role}: ${text}`);
+          parts.push(`[id:${message.id}] [${timestamp}] ${message.role}: ${text}`);
         }
       }
 
