@@ -7,7 +7,7 @@ import type { Config } from "./config.js";
 import { isInAllowlist } from "./allowlist.js";
 import type { FileAttachment } from "./uploads.js";
 import { getApiKey } from "./auth.js";
-import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, readScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, resolveRecipient, resolveInterlocutorByName, getMainAgentId, loadAgent, type Memory } from "./database.js";
+import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, readScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, resolveRecipient, resolveInterlocutorByName, getMainAgentId, loadAgent, COMPACTION_THRESHOLD, type Memory } from "./database.js";
 import type { RoutingResult } from "./queue.js";
 import { reloadScheduler } from "./scheduler.js";
 import { createManagePluginsTool, createRunPluginToolTool, createRequestCodingTaskTool } from "./plugin-tools.js";
@@ -2097,7 +2097,7 @@ export async function handlePrompt(
         .join("")
     : "";
 
-  if (agent.state.messages.length > 40 && !compactionInProgress) {
+  if (agent.state.messages.length > COMPACTION_THRESHOLD && !compactionInProgress) {
     compactionInProgress = true;
     // Snapshot the messages now so the background task works on a stable slice
     // and never touches agent.state.messages directly.

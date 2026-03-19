@@ -7,6 +7,10 @@ import type { OwnerConfig } from "./config.js";
 import { log } from "./log.js";
 import { matchesEmailEntry } from "./allowlist.js";
 
+// The number of most-recent messages kept in the agent's context window. Used
+// both to trigger compaction and to exclude the recent window from search results.
+export const COMPACTION_THRESHOLD = 40;
+
 export async function connectDatabase(): Promise<pg.Pool> {
   const config = loadPostgresConfig();
   const pool = new pg.Pool({

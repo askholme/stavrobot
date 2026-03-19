@@ -29,6 +29,7 @@ vi.mock("./database.js", () => ({
   resolveInterlocutorByName: vi.fn(),
   getMainAgentId: vi.fn(),
   loadAgent: vi.fn(),
+  COMPACTION_THRESHOLD: 40,
 }));
 vi.mock("./config.js", () => ({
   loadPostgresConfig: vi.fn().mockReturnValue({}),

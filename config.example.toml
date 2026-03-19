@@ -122,7 +122,7 @@ model = "sonnet"
 
 # Optional OpenAI embeddings support. When present, the bot generates vector
 # embeddings for semantic search. This improves recall (finding relevant
-# messages that don't share exact keywords) at the cost of ~50ms extra latency
+# messages that don't share exact keywords) at the cost of ~300ms extra latency
 # per search. Without embeddings, search falls back to full-text only.
 # [embeddings]
 # apiKey = "your-openai-api-key-here"
@@ -130,3 +130,4 @@ model = "sonnet"
 # Feature flags. All flags are optional and default to disabled.
 # [featureFlags]
 # autoSearch = true  # Automatically search conversation history before responding.
+                     # Improves relevance at the cost of speed.
