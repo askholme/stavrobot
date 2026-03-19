@@ -111,6 +111,12 @@ let compactionCompletedForAgent: number | null = null;
 // condition. The send_agent_message tool reads this to identify the sender.
 export let currentAgentId: number = 0;
 
+// Holds the auto-search block for the current turn, keyed by Agent instance.
+// Using a WeakMap ensures each Agent's pending block is isolated from others,
+// and entries are garbage-collected when the Agent is no longer referenced.
+// Exported for testing only.
+export const pendingAutoSearchBlocks = new WeakMap<Agent, string | undefined>();
+
 export function createExecuteSqlTool(pool: pg.Pool): AgentTool {
   return {
     name: "execute_sql",
@@ -1331,6 +1337,57 @@ export function truncateContext(messages: AgentMessage[], tokenBudget: number): 
   return result;
 }
 
+// Injects the auto-search block ephemerally into the last user message in the
+// context. Returns the messages array unchanged if there is no block or no user
+// message. Does not mutate the original message objects.
+export function injectAutoSearchBlock(messages: AgentMessage[], searchBlock: string | undefined): AgentMessage[] {
+  if (searchBlock === undefined) {
+    return messages;
+  }
+
+  const lastUserIndex = messages.reduce(
+    (found, message, index) => (message.role === "user" ? index : found),
+    -1,
+  );
+
+  if (lastUserIndex === -1) {
+    return messages;
+  }
+
+  const lastUserMessage = messages[lastUserIndex];
+
+  // Narrow to UserMessage: only user messages have string | array content.
+  if (lastUserMessage.role !== "user") {
+    return messages;
+  }
+
+  let updatedMessage: AgentMessage;
+
+  if (typeof lastUserMessage.content === "string") {
+    updatedMessage = { ...lastUserMessage, content: `${lastUserMessage.content}\n\n${searchBlock}` };
+  } else {
+    // Array content: find the last text block and append to it, or add a new one.
+    const contentArray = [...lastUserMessage.content];
+    const lastTextIndex = contentArray.reduce(
+      (found, block, index) => (block.type === "text" ? index : found),
+      -1,
+    );
+
+    if (lastTextIndex !== -1) {
+      const textBlock = contentArray[lastTextIndex] as TextContent;
+      contentArray[lastTextIndex] = { ...textBlock, text: `${textBlock.text}\n\n${searchBlock}` };
+    } else {
+      contentArray.push({ type: "text", text: searchBlock });
+    }
+
+    updatedMessage = { ...lastUserMessage, content: contentArray };
+  }
+
+  const result = [...messages];
+  result[lastUserIndex] = updatedMessage;
+  return result;
+}
+
 export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent> {
   const model = getModel(config.provider as any, config.model as any);
   const tools = [createExecuteSqlTool(pool), createManageKnowledgeTool(pool), createSendSignalMessageTool(pool, config), createManageCronTool(pool), createRunPythonTool(), createManagePagesTool(pool), createManageUploadsTool(), createSearchTool(pool, config.embeddings), createManageFilesTool(), createManageInterlocutorsTool(pool), createManageAgentsTool(pool), createSendAgentMessageTool(pool, () => currentAgentId)];
@@ -1359,6 +1416,13 @@ export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent>
 
   const tokenBudget = Math.floor(model.contextWindow * 0.8);
 
+  // Declare agent as Agent | undefined so the transformContext closure can
+  // safely guard against the (theoretical) case where it fires before the
+  // assignment completes. In practice the callback is only invoked during
+  // agent.prompt(), which happens after createAgent returns, but the guard
+  // makes the invariant explicit and prevents WeakMap.get(undefined) from
+  // throwing if the timing assumption ever changes.
+  let agentRef: Agent | undefined;
   const agent = new Agent({
     initialState: {
       systemPrompt: effectiveBasePrompt,
@@ -1368,8 +1432,13 @@ export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent>
       messages: [],
     },
     getApiKey: () => getApiKey(config),
-    transformContext: async (messages) => truncateContext(messages, tokenBudget),
+    transformContext: async (messages) => {
+      const truncated = truncateContext(messages, tokenBudget);
+      const searchBlock = agentRef !== undefined ? pendingAutoSearchBlocks.get(agentRef) : undefined;
+      return injectAutoSearchBlock(truncated, searchBlock);
+    },
   });
+  agentRef = agent;
 
   return agent;
 }
@@ -1712,6 +1781,8 @@ export async function handlePrompt(
   source?: string,
   attachments?: FileAttachment[]
 ): Promise<string> {
+  pendingAutoSearchBlocks.delete(agent);
+
   const { agentId, senderIdentityId, senderAgentId, senderLabel, isMainAgent } = routing;
 
   // Track the current agent ID so the send_agent_message tool can identify the
@@ -1882,92 +1953,99 @@ export async function handlePrompt(
 
       const hasResults = searchResults.tableResults.length > 0 || searchResults.messages.length > 0;
       if (hasResults) {
-        const autoSearchBlock = buildAutoSearchBlock(searchResults, resolvedMessage);
-        resolvedMessage = `${resolvedMessage}\n\n${autoSearchBlock}`;
+        pendingAutoSearchBlocks.set(agent, buildAutoSearchBlock(searchResults, resolvedMessage));
       }
     } catch (error) {
       log.warn("[stavrobot] auto-search failed, continuing without results:", error instanceof Error ? error.message : String(error));
     }
   }
 
-  const messageToSend = formatUserMessage(resolvedMessage ?? "", source, senderLabel);
-
-  // Filter tools for subagents based on their allowed_tools list. The main
-  // agent always gets the full tool set. For subagents, we temporarily swap
-  // the tool list before the prompt and restore it after. The Agent class
-  // provides a public setTools() method for this purpose.
-  const fullTools = agent.state.tools;
-  if (!isMainAgent) {
-    const allowedTools = subagentRow?.allowedTools ?? [];
-    const allowedPlugins = subagentRow?.allowedPlugins ?? [];
-    // A wildcard means all tools are allowed (should only be agent 1 in practice).
-    if (!allowedTools.includes("*")) {
-      const filteredTools = filterToolsForSubagent(fullTools, allowedTools, allowedPlugins);
-      agent.setTools(filteredTools);
-    }
-  }
-
-  // The Pi agent loop's getApiKey callback runs inside an async context where thrown
-  // errors become unhandled promise rejections that crash Node rather than propagating
-  // through the stream's async iterator. By checking auth here before entering the agent
-  // loop, we ensure AuthError propagates cleanly to the queue's error handler. This does
-  // not cover the rare case where a token expires mid-conversation between tool calls.
-  await getApiKey(config);
-
-  // Track whether the first user message has been saved so we can attach sender
-  // metadata only to that message.
-  let firstUserMessageSaved = false;
-
-  const unsubscribe = agent.subscribe((event) => {
-    if (event.type === "message_end") {
-      const message = event.message;
-      if (message.role === "assistant") {
-        const assistantMessage = message as unknown as AssistantMessage;
-        if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
-          return;
-        }
-      }
-      if (
-        message.role === "user" ||
-        message.role === "assistant" ||
-        message.role === "toolResult"
-      ) {
-        // Only the inbound user message carries sender metadata. Assistant and
-        // toolResult messages are produced by the agent itself and have no
-        // external sender.
-        if (message.role === "user" && !firstUserMessageSaved) {
-          firstUserMessageSaved = true;
-          saveChain = saveChain.then(async () => {
-            const messageId = await saveMessage(pool, message, agentId, senderIdentityId, senderAgentId);
-            if (autoSearchEmbedding !== undefined) {
-              const vectorLiteral = `[${autoSearchEmbedding.join(",")}]`;
-              await pool.query(
-                "INSERT INTO message_embeddings (message_id, embedding) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                [messageId, vectorLiteral],
-              );
-              log.debug(`[stavrobot] auto-search embedding stored for message ${messageId}`);
-            }
-          });
-        } else {
-          saveChain = saveChain.then(() => saveMessage(pool, message, agentId));
-        }
-      }
-    }
-  });
-
+  // The try/finally starts here — after the auto-search block may have been
+  // set — so that pendingAutoSearchBlocks.delete(agent) runs on every exit
+  // path, including exceptions thrown by getApiKey, setTools, or subscribe
+  // before agent.prompt is reached.
   try {
-    if (imageContents.length > 0) {
-      await agent.prompt(messageToSend, imageContents);
-    } else {
-      await agent.prompt(messageToSend);
+    const messageToSend = formatUserMessage(resolvedMessage ?? "", source, senderLabel);
+
+    // Filter tools for subagents based on their allowed_tools list. The main
+    // agent always gets the full tool set. For subagents, we temporarily swap
+    // the tool list before the prompt and restore it after. The Agent class
+    // provides a public setTools() method for this purpose.
+    const fullTools = agent.state.tools;
+    if (!isMainAgent) {
+      const allowedTools = subagentRow?.allowedTools ?? [];
+      const allowedPlugins = subagentRow?.allowedPlugins ?? [];
+      // A wildcard means all tools are allowed (should only be agent 1 in practice).
+      if (!allowedTools.includes("*")) {
+        const filteredTools = filterToolsForSubagent(fullTools, allowedTools, allowedPlugins);
+        agent.setTools(filteredTools);
+      }
+    }
+
+    // The Pi agent loop's getApiKey callback runs inside an async context where thrown
+    // errors become unhandled promise rejections that crash Node rather than propagating
+    // through the stream's async iterator. By checking auth here before entering the agent
+    // loop, we ensure AuthError propagates cleanly to the queue's error handler. This does
+    // not cover the rare case where a token expires mid-conversation between tool calls.
+    await getApiKey(config);
+
+    // Track whether the first user message has been saved so we can attach sender
+    // metadata only to that message.
+    let firstUserMessageSaved = false;
+
+    const unsubscribe = agent.subscribe((event) => {
+      if (event.type === "message_end") {
+        const message = event.message;
+        if (message.role === "assistant") {
+          const assistantMessage = message as unknown as AssistantMessage;
+          if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
+            return;
+          }
+        }
+        if (
+          message.role === "user" ||
+          message.role === "assistant" ||
+          message.role === "toolResult"
+        ) {
+          // Only the inbound user message carries sender metadata. Assistant and
+          // toolResult messages are produced by the agent itself and have no
+          // external sender.
+          if (message.role === "user" && !firstUserMessageSaved) {
+            firstUserMessageSaved = true;
+            saveChain = saveChain.then(async () => {
+              const messageId = await saveMessage(pool, message, agentId, senderIdentityId, senderAgentId);
+              if (autoSearchEmbedding !== undefined) {
+                const vectorLiteral = `[${autoSearchEmbedding.join(",")}]`;
+                await pool.query(
+                  "INSERT INTO message_embeddings (message_id, embedding) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                  [messageId, vectorLiteral],
+                );
+                log.debug(`[stavrobot] auto-search embedding stored for message ${messageId}`);
+              }
+            });
+          } else {
+            saveChain = saveChain.then(() => saveMessage(pool, message, agentId));
+          }
+        }
+      }
+    });
+
+    try {
+      if (imageContents.length > 0) {
+        await agent.prompt(messageToSend, imageContents);
+      } else {
+        await agent.prompt(messageToSend);
+      }
+    } finally {
+      // Restore the full tool list if it was filtered for a subagent.
+      if (!isMainAgent) {
+        agent.setTools(fullTools);
+      }
+      unsubscribe();
+      await saveChain;
     }
   } finally {
-    // Restore the full tool list if it was filtered for a subagent.
-    if (!isMainAgent) {
-      agent.setTools(fullTools);
-    }
-    unsubscribe();
-    await saveChain;
+    pendingAutoSearchBlocks.delete(agent);
   }
 
   if (agent.state.error) {

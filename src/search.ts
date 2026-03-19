@@ -216,7 +216,20 @@ export async function runSearch(
   mergedMessages.sort((a, b) => b.score - a.score);
   const topMessages = mergedMessages.slice(0, limit);
 
-  return { tableResults, messages: topMessages, queryEmbedding };
+  // Cap total table result rows at 5 across all tables (naive truncation, no ranking).
+  const TABLE_RESULT_ROW_LIMIT = 5;
+  let remainingRows = TABLE_RESULT_ROW_LIMIT;
+  const cappedTableResults: TableResult[] = [];
+  for (const tableResult of tableResults) {
+    if (remainingRows <= 0) {
+      break;
+    }
+    const rows = tableResult.rows.slice(0, remainingRows);
+    cappedTableResults.push({ ...tableResult, rows });
+    remainingRows -= rows.length;
+  }
+
+  return { tableResults: cappedTableResults, messages: topMessages, queryEmbedding };
 }
 
 export function createSearchTool(pool: pg.Pool, embeddingsConfig?: EmbeddingsConfig): AgentTool {

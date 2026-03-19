@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, type MockedFunction } from "vitest";
-import type { AgentMessage, AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { Agent, AgentMessage, AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Pool } from "pg";
-import { serializeMessagesForSummary, filterToolsForSubagent, formatPluginListSection, truncateContext, createManageKnowledgeTool } from "./agent.js";
+import { serializeMessagesForSummary, filterToolsForSubagent, formatPluginListSection, truncateContext, createManageKnowledgeTool, injectAutoSearchBlock, pendingAutoSearchBlocks, handlePrompt, createAgent } from "./agent.js";
+import { getApiKey } from "./auth.js";
+import { loadMessages, loadAllMemories, loadAllScratchpadTitles, getMainAgentId } from "./database.js";
+import { runSearch } from "./search.js";
+import { internalFetch } from "./internal-fetch.js";
 
 // Mock all heavy dependencies so the module loads without real infrastructure.
 vi.mock("./database.js", () => ({
@@ -39,18 +43,18 @@ vi.mock("./auth.js", () => ({ getApiKey: vi.fn() }));
 vi.mock("./queue.js", () => ({}));
 vi.mock("./scheduler.js", () => ({ reloadScheduler: vi.fn() }));
 vi.mock("./plugin-tools.js", () => ({
-  createManagePluginsTool: vi.fn(),
-  createRunPluginToolTool: vi.fn(),
-  createRequestCodingTaskTool: vi.fn(),
+  createManagePluginsTool: vi.fn().mockReturnValue(makeMinimalTool("manage_plugins")),
+  createRunPluginToolTool: vi.fn().mockReturnValue(makeMinimalTool("run_plugin_tool")),
+  createRequestCodingTaskTool: vi.fn().mockReturnValue(makeMinimalTool("request_coding_task")),
 }));
-vi.mock("./python.js", () => ({ createRunPythonTool: vi.fn() }));
-vi.mock("./pages.js", () => ({ createManagePagesTool: vi.fn() }));
-vi.mock("./files.js", () => ({ createManageFilesTool: vi.fn() }));
-vi.mock("./interlocutors.js", () => ({ createManageInterlocutorsTool: vi.fn() }));
-vi.mock("./agents.js", () => ({ createManageAgentsTool: vi.fn() }));
-vi.mock("./send-agent-message.js", () => ({ createSendAgentMessageTool: vi.fn() }));
-vi.mock("./search.js", () => ({ createSearchTool: vi.fn() }));
-vi.mock("./upload-tools.js", () => ({ createManageUploadsTool: vi.fn() }));
+vi.mock("./python.js", () => ({ createRunPythonTool: vi.fn().mockReturnValue(makeMinimalTool("run_python")) }));
+vi.mock("./pages.js", () => ({ createManagePagesTool: vi.fn().mockReturnValue(makeMinimalTool("manage_pages")) }));
+vi.mock("./files.js", () => ({ createManageFilesTool: vi.fn().mockReturnValue(makeMinimalTool("manage_files")) }));
+vi.mock("./interlocutors.js", () => ({ createManageInterlocutorsTool: vi.fn().mockReturnValue(makeMinimalTool("manage_interlocutors")) }));
+vi.mock("./agents.js", () => ({ createManageAgentsTool: vi.fn().mockReturnValue(makeMinimalTool("manage_agents")) }));
+vi.mock("./send-agent-message.js", () => ({ createSendAgentMessageTool: vi.fn().mockReturnValue(makeMinimalTool("send_agent_message")) }));
+vi.mock("./search.js", () => ({ createSearchTool: vi.fn().mockReturnValue(makeMinimalTool("search")), runSearch: vi.fn() }));
+vi.mock("./upload-tools.js", () => ({ createManageUploadsTool: vi.fn().mockReturnValue(makeMinimalTool("manage_uploads")) }));
 vi.mock("./telegram.js", () => ({ convertMarkdownToTelegramHtml: vi.fn() }));
 vi.mock("./toon.js", () => ({ encodeToToon: vi.fn() }));
 vi.mock("./signal.js", () => ({ sendSignalMessage: vi.fn() }));
@@ -76,11 +80,84 @@ vi.mock("@mariozechner/pi-ai", () => ({
     Array: vi.fn().mockReturnValue({}),
     Record: vi.fn().mockReturnValue({}),
   },
-  getModel: vi.fn(),
+  getModel: vi.fn().mockReturnValue({ contextWindow: 200000 }),
   complete: vi.fn(),
 }));
+// makeMinimalTool is hoisted so it can be used in vi.mock factories below.
+// Tool factory mocks need to return a valid AgentTool so createAgent can call
+// wrapToolWithLogging on each tool without crashing.
+const { makeMinimalTool } = vi.hoisted(() => {
+  function makeMinimalTool(name: string): { name: string; label: string; description: string; parameters: Record<string, never>; execute: () => Promise<never> } {
+    return {
+      name,
+      label: name,
+      description: `Mock ${name}`,
+      parameters: {},
+      execute: async () => { throw new Error(`${name} not implemented in tests`); },
+    };
+  }
+  return { makeMinimalTool };
+});
+
+// FakeAgent is hoisted so it can be referenced in the vi.mock factory below.
+// It captures the transformContext callback from createAgent and calls it when
+// prompt() is invoked, allowing integration tests to observe what context the
+// agent would send to the LLM without needing a real LLM connection.
+const { FakeAgent } = vi.hoisted(() => {
+  class FakeAgent {
+    private transformContextFn?: (messages: unknown[]) => Promise<unknown[]>;
+    public capturedContextMessages: unknown[] | undefined;
+    public messages: unknown[] = [];
+    public error: unknown = undefined;
+    public tools: unknown[] = [];
+    // Set this before calling prompt() to make it throw.
+    public promptError: Error | undefined = undefined;
+
+    constructor(opts?: { transformContext?: (messages: unknown[]) => Promise<unknown[]> }) {
+      this.transformContextFn = opts?.transformContext;
+    }
+
+    get state(): { tools: unknown[]; messages: unknown[]; error: unknown } {
+      return { tools: this.tools, messages: this.messages, error: this.error };
+    }
+
+    replaceMessages(ms: unknown[]): void {
+      this.messages = ms;
+    }
+
+    setSystemPrompt(_v: string): void {}
+
+    setTools(t: unknown[]): void {
+      this.tools = t;
+    }
+
+    subscribe(_fn: (e: unknown) => void): () => void {
+      return () => {};
+    }
+
+    appendMessage(_m: unknown): void {}
+
+    async prompt(message: unknown): Promise<void> {
+      if (this.promptError !== undefined) {
+        throw this.promptError;
+      }
+      if (this.transformContextFn !== undefined) {
+        // Mirror the real Agent: append the incoming user message to the stored
+        // messages before invoking transformContext, so the callback sees the
+        // full context (history + new prompt) exactly as the real agent does.
+        const userMessage = typeof message === "string"
+          ? { role: "user", content: message, timestamp: Date.now() }
+          : message;
+        this.capturedContextMessages = await this.transformContextFn([...this.messages, userMessage]);
+      }
+    }
+  }
+
+  return { FakeAgent };
+});
+
 vi.mock("@mariozechner/pi-agent-core", () => ({
-  Agent: vi.fn(),
+  Agent: FakeAgent,
 }));
 
 // Helper to build a minimal assistant message without filling in all required
@@ -773,5 +850,231 @@ describe("createManageKnowledgeTool — read action", () => {
     const result = await tool.execute("tc1", { action: "read", store: "scratchpad" });
 
     expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("id is required") });
+  });
+});
+
+describe("injectAutoSearchBlock", () => {
+  it("returns messages unchanged when searchBlock is undefined", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Hello", timestamp: 0 },
+    ];
+    const result = injectAutoSearchBlock(messages, undefined);
+    expect(result).toBe(messages);
+  });
+
+  it("returns messages unchanged when there are no user messages", () => {
+    const messages: AgentMessage[] = [
+      assistantMessage([{ type: "text", text: "Hi!" }]),
+    ];
+    const result = injectAutoSearchBlock(messages, "search results");
+    expect(result).toBe(messages);
+  });
+
+  it("appends the search block to a string-content user message", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "Hello", timestamp: 0 },
+    ];
+    const result = injectAutoSearchBlock(messages, "search results");
+    expect(result).not.toBe(messages);
+    const content = (result[0] as { content: string }).content;
+    expect(content).toBe("Hello\n\nsearch results");
+  });
+
+  it("appends to the last user message, not an earlier one", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "First message", timestamp: 0 },
+      assistantMessage([{ type: "text", text: "Response" }]),
+      { role: "user", content: "Second message", timestamp: 1 },
+    ];
+    const result = injectAutoSearchBlock(messages, "search results");
+    const firstContent = (result[0] as { content: string }).content;
+    const lastContent = (result[2] as { content: string }).content;
+    expect(firstContent).toBe("First message");
+    expect(lastContent).toBe("Second message\n\nsearch results");
+  });
+
+  it("appends to the last text block in an array-content user message", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Hello" }],
+        timestamp: 0,
+      } as unknown as AgentMessage,
+    ];
+    const result = injectAutoSearchBlock(messages, "search results");
+    const content = (result[0] as { content: Array<{ type: string; text: string }> }).content;
+    expect(content[0].text).toBe("Hello\n\nsearch results");
+  });
+
+  it("adds a new text block when array-content user message has no text blocks", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "user",
+        content: [{ type: "image", data: "base64data", mimeType: "image/png" }],
+        timestamp: 0,
+      } as unknown as AgentMessage,
+    ];
+    const result = injectAutoSearchBlock(messages, "search results");
+    const content = (result[0] as { content: Array<{ type: string; text?: string }> }).content;
+    expect(content).toHaveLength(2);
+    expect(content[1]).toMatchObject({ type: "text", text: "search results" });
+  });
+
+  it("does not mutate the original messages or their content arrays", () => {
+    const originalContent = [{ type: "text" as const, text: "Hello" }];
+    const originalMessage = {
+      role: "user" as const,
+      content: originalContent,
+      timestamp: 0,
+    } as unknown as AgentMessage;
+    const messages: AgentMessage[] = [originalMessage];
+
+    injectAutoSearchBlock(messages, "search results");
+
+    expect(messages[0]).toBe(originalMessage);
+    expect((originalMessage as { content: typeof originalContent }).content).toBe(originalContent);
+    expect(originalContent[0].text).toBe("Hello");
+  });
+
+  it("does not mutate the original messages array when content is a string", () => {
+    const originalMessage = { role: "user" as const, content: "Hello", timestamp: 0 };
+    const messages: AgentMessage[] = [originalMessage];
+
+    injectAutoSearchBlock(messages, "search results");
+
+    expect(messages[0]).toBe(originalMessage);
+    expect(originalMessage.content).toBe("Hello");
+  });
+});
+
+// Minimal config for integration tests that exercise handlePrompt and createAgent.
+// Only the fields read by the code paths under test are populated.
+const minimalConfig = {
+  provider: "anthropic",
+  model: "claude-3-5-sonnet-20241022",
+  apiKey: "test-key",
+  baseSystemPrompt: "You are a helpful assistant.",
+  baseAgentPrompt: "You are a subagent.",
+  publicHostname: "localhost",
+  compactionPrompt: "Summarize.",
+  featureFlags: { autoSearch: true },
+} as unknown as import("./config.js").Config;
+
+// Minimal routing result for the main agent.
+const mainAgentRouting = {
+  agentId: 1,
+  senderIdentityId: undefined,
+  senderAgentId: undefined,
+  senderLabel: "test-user",
+  isMainAgent: true,
+};
+
+// Minimal pool stub: only the methods called by handlePrompt are needed.
+function makePool(): Pool {
+  return {
+    query: vi.fn().mockResolvedValue({ rows: [] }),
+  } as unknown as Pool;
+}
+
+describe("pendingAutoSearchBlocks — integration tests via handlePrompt and createAgent", () => {
+  it("cleans up the pending block when a pre-prompt exception is thrown", async () => {
+    // Set up database mocks for this test.
+    vi.mocked(loadMessages).mockResolvedValue([]);
+    vi.mocked(loadAllMemories).mockResolvedValue([]);
+    vi.mocked(loadAllScratchpadTitles).mockResolvedValue([]);
+    vi.mocked(getMainAgentId).mockReturnValue(1);
+
+    // internalFetch is called by fetchPluginList; return an empty plugin list.
+    vi.mocked(internalFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ plugins: [] }),
+    } as unknown as Response);
+
+    // runSearch returns a result so handlePrompt sets a pending block.
+    vi.mocked(runSearch).mockResolvedValue({
+      tableResults: [{ tableName: "notes", matchCount: 1, rows: [{ body: "relevant note" }] }],
+      messages: [],
+    });
+
+    const agent = await createAgent(minimalConfig, makePool());
+    const fakeAgent = agent as unknown as InstanceType<typeof FakeAgent>;
+
+    // getApiKey throws after the block is set, triggering the finally cleanup.
+    // The assertion inside the mock proves the pending block was set before the
+    // exception propagated, making the subsequent cleanup assertion meaningful.
+    vi.mocked(getApiKey).mockImplementation(async () => {
+      expect(pendingAutoSearchBlocks.has(fakeAgent as unknown as Agent)).toBe(true);
+      throw new Error("auth failed");
+    });
+
+    let caughtError: unknown;
+    try {
+      await handlePrompt(agent, makePool(), "find my notes", minimalConfig, mainAgentRouting, "signal");
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(Error);
+    // The finally block in handlePrompt must have deleted the entry.
+    expect(pendingAutoSearchBlocks.has(fakeAgent as unknown as Agent)).toBe(false);
+  });
+
+  it("does not inject the turn-1 auto-search block into the turn-2 prompt context", async () => {
+    // Set up database mocks for both turns.
+    vi.mocked(loadMessages).mockResolvedValue([]);
+    vi.mocked(loadAllMemories).mockResolvedValue([]);
+    vi.mocked(loadAllScratchpadTitles).mockResolvedValue([]);
+    vi.mocked(getMainAgentId).mockReturnValue(1);
+
+    vi.mocked(internalFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ plugins: [] }),
+    } as unknown as Response);
+
+    // getApiKey succeeds for both turns.
+    vi.mocked(getApiKey).mockResolvedValue("test-key");
+
+    const pool = makePool();
+    const agent = await createAgent(minimalConfig, pool);
+    const fakeAgent = agent as unknown as InstanceType<typeof FakeAgent>;
+
+    // Turn 1: auto-search returns results, so a block is set and injected.
+    vi.mocked(runSearch).mockResolvedValueOnce({
+      tableResults: [{ tableName: "notes", matchCount: 1, rows: [{ body: "turn 1 result" }] }],
+      messages: [],
+    });
+
+    await handlePrompt(agent, pool, "find my notes", minimalConfig, mainAgentRouting, "signal");
+
+    // After turn 1, the finally block must have cleared the pending entry.
+    expect(pendingAutoSearchBlocks.has(fakeAgent as unknown as Agent)).toBe(false);
+
+    // Turn 2: auto-search returns no results, so no block is set.
+    vi.mocked(runSearch).mockResolvedValueOnce({
+      tableResults: [],
+      messages: [],
+    });
+
+    await handlePrompt(agent, pool, "what did I say?", minimalConfig, mainAgentRouting, "signal");
+
+    // The entry-point delete at the top of handlePrompt ran, and no new block
+    // was set. The transformContext callback must therefore see no block.
+    expect(pendingAutoSearchBlocks.has(fakeAgent as unknown as Agent)).toBe(false);
+
+    // Verify that the captured context for turn 2 does not contain the turn-1
+    // auto-search block. capturedContextMessages holds what transformContext
+    // returned on the most recent prompt() call. The assertions are
+    // unconditional: a missing or empty context is itself a test failure,
+    // because FakeAgent.prompt() always populates capturedContextMessages when
+    // transformContextFn is set (and createAgent always sets it).
+    const capturedMessages = fakeAgent.capturedContextMessages as Array<{ role: string; content: unknown }>;
+    expect(capturedMessages).toBeDefined();
+    const lastUserMessage = capturedMessages.filter((m) => m.role === "user").at(-1);
+    expect(lastUserMessage).toBeDefined();
+    const contentText = typeof lastUserMessage!.content === "string"
+      ? lastUserMessage!.content
+      : JSON.stringify(lastUserMessage!.content);
+    expect(contentText).not.toContain("turn 1 result");
+    expect(contentText).not.toContain("Auto-search results");
   });
 });
