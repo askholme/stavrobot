@@ -22,12 +22,13 @@ It has all the nice features of an AI assistant, but focuses on sandboxing, isol
 
 ## Quickstart
 
-1. Copy `config.example.toml` to `data/main/config.toml` and fill in your API keys (at minimum, set `authFile` or `apiKey` and `publicHostname`).
-2. Copy `env.example` to `.env`, set your timezone (`TZ`), and **change `POSTGRES_PASSWORD`** to something secure.
-3. To enable Telegram: message [@BotFather](https://t.me/BotFather) to create a bot and copy the token into `[telegram].botToken` in your config. Message [@userinfobot](https://t.me/userinfobot) to get your chat ID, then add it via the `/settings` web UI after first startup.
+1. Message [@BotFather](https://t.me/BotFather) on Telegram to create a bot and copy the token. Message [@userinfobot](https://t.me/userinfobot) to get your chat ID.
+2. Copy `env.example` to `.env` and **change `POSTGRES_PASSWORD`** to something secure and `TZ` to your timezone.
+3. Copy `config.example.toml` to `data/main/config.toml` and fill in the required fields: `apiKey`, `password`, `publicHostname`, `[owner].name`, `[owner].telegram` (your chat ID), and `[telegram].botToken`. Everything else in the file is optional.
+
 4. `docker compose up --build`
 
-That's it. The API is available at `http://localhost:10567/chat`, and the Python CLI client (`client.py`) is included for interactive use. See the detailed setup sections below for Signal, WhatsApp, email, and other options.
+That's it. Message your bot on Telegram and it will respond. See the detailed setup sections below for Signal, WhatsApp, email, and other options.
 
 ## Setup
 
