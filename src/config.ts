@@ -53,10 +53,6 @@ export interface OwnerConfig {
 
 export const OWNER_CHANNELS: (keyof OwnerConfig)[] = ["signal", "telegram", "whatsapp", "email"];
 
-export interface FeatureFlagsConfig {
-  autoSearch?: boolean;
-}
-
 export interface Config {
   provider: string;
   model: string;
@@ -75,7 +71,6 @@ export interface Config {
   whatsapp?: WhatsappConfig;
   email?: EmailConfig;
   owner: OwnerConfig;
-  featureFlags?: FeatureFlagsConfig;
 }
 
 export function loadConfig(): Config {

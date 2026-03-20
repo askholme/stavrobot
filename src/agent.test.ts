@@ -958,7 +958,6 @@ const minimalConfig = {
   baseAgentPrompt: "You are a subagent.",
   publicHostname: "localhost",
   compactionPrompt: "Summarize.",
-  featureFlags: { autoSearch: true },
 } as unknown as import("./config.js").Config;
 
 // Minimal routing result for the main agent.

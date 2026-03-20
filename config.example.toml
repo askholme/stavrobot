@@ -131,7 +131,3 @@ model = "sonnet"
 # [embeddings]
 # apiKey = "your-openai-api-key-here"
 
-# Feature flags. All flags are optional and default to disabled.
-# [featureFlags]
-# autoSearch = true  # Automatically search conversation history before responding.
-                     # Improves relevance at the cost of speed.

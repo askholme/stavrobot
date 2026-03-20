@@ -1936,7 +1936,6 @@ export async function handlePrompt(
   let autoSearchEmbedding: number[] | undefined;
 
   if (
-    config.featureFlags?.autoSearch === true &&
     isMainAgent &&
     source !== undefined &&
     AUTO_SEARCH_SOURCES.includes(source) &&
