@@ -1,3 +1,7 @@
+# Valid providers: amazon-bedrock, anthropic, azure-openai-responses, cerebras,
+# github-copilot, google, google-antigravity, google-gemini-cli, google-vertex,
+# groq, huggingface, kimi-coding, minimax, minimax-cn, mistral, openai,
+# openai-codex, opencode, opencode-go, openrouter, vercel-ai-gateway, xai, zai.
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 
