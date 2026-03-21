@@ -630,7 +630,7 @@ describe("formatPluginListSection", () => {
 });
 
 describe("truncateContext", () => {
-  // Each character is 1/4 token, so 4 chars = 1 token.
+  // Each character is 1/3 token, so 3 chars = 1 token.
 
   it("returns messages unchanged when total tokens are within budget", () => {
     const messages: AgentMessage[] = [
@@ -650,7 +650,7 @@ describe("truncateContext", () => {
   });
 
   it("truncates a string-content user message that exceeds the budget", () => {
-    // 40 chars = 10 tokens; budget = 5 tokens.
+    // 40 chars = ~13.3 tokens; budget = 5 tokens.
     const longText = "a".repeat(40);
     const messages: AgentMessage[] = [
       { role: "user", content: longText, timestamp: 0 },
@@ -663,7 +663,7 @@ describe("truncateContext", () => {
   });
 
   it("truncates a text block in a tool result message", () => {
-    // 400 chars = 100 tokens; budget = 10 tokens.
+    // 400 chars = ~133 tokens; budget = 10 tokens.
     const longText = "x".repeat(400);
     const messages: AgentMessage[] = [
       {
@@ -683,8 +683,8 @@ describe("truncateContext", () => {
   });
 
   it("truncates the largest text block first when multiple blocks exist", () => {
-    // Small block: 40 chars = 10 tokens. Large block: 400 chars = 100 tokens.
-    // Budget = 30 tokens. Total = 110 tokens, excess = 80 tokens = 320 chars.
+    // Small block: 40 chars = ~13 tokens. Large block: 400 chars = ~133 tokens.
+    // Budget = 30 tokens. Total = ~147 tokens, excess = ~117 tokens.
     const smallText = "s".repeat(40);
     const largeText = "L".repeat(400);
     const messages: AgentMessage[] = [
@@ -790,7 +790,7 @@ describe("truncateContext", () => {
   });
 
   it("does not grow the context when a text block is shorter than the truncation suffix", () => {
-    // A 4-char block is 1 token. The truncation suffix "\n[truncated]" is 12 chars.
+    // A 4-char block is ~1.3 tokens. The truncation suffix "\n[truncated]" is 12 chars.
     // Without the guard, truncating would replace 4 chars with 12, making things worse.
     const tinyText = "abcd";
     const messages: AgentMessage[] = [
@@ -803,7 +803,7 @@ describe("truncateContext", () => {
         timestamp: 0,
       } as unknown as AgentMessage,
     ];
-    const originalTokens = tinyText.length / 4;
+    const originalTokens = tinyText.length / 3;
     // Budget below the block's token count to trigger truncation logic.
     const result = truncateContext(messages, originalTokens - 0.1);
     const block = (result[0] as { content: Array<{ type: string; text: string }> }).content[0];

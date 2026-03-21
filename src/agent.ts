@@ -1181,20 +1181,23 @@ function wrapToolWithLogging(tool: AgentTool): AgentTool {
   };
 }
 
-// The 4-chars-per-token ratio is a rough approximation for English text.
+// Conservative estimate: structured data and non-English text tokenize at
+// closer to 3 chars/token rather than the 4 chars/token typical of English prose.
+const CHARS_PER_TOKEN = 3;
+
 // Images use a fixed 1000-token estimate because actual cost depends on
 // resolution, which we don't have at this point.
 function estimateBlockTokens(block: TextContent | ImageContent | ThinkingContent | ToolCall): number {
   if (block.type === "text") {
-    return block.text.length / 4;
+    return block.text.length / CHARS_PER_TOKEN;
   }
   if (block.type === "image") {
     return 1000;
   }
   if (block.type === "thinking") {
-    return block.thinking.length / 4;
+    return block.thinking.length / CHARS_PER_TOKEN;
   }
-  return JSON.stringify(block.arguments).length / 4;
+  return JSON.stringify(block.arguments).length / CHARS_PER_TOKEN;
 }
 
 function estimateTokens(messages: AgentMessage[]): number {
@@ -1202,7 +1205,7 @@ function estimateTokens(messages: AgentMessage[]): number {
   for (const message of messages) {
     if (message.role === "user") {
       if (typeof message.content === "string") {
-        total += message.content.length / 4;
+        total += message.content.length / CHARS_PER_TOKEN;
       } else {
         for (const block of message.content) {
           total += estimateBlockTokens(block);
@@ -1282,7 +1285,7 @@ export function truncateContext(messages: AgentMessage[], tokenBudget: number): 
 
     const excess = currentTokens - tokenBudget;
     const truncationSuffix = "\n[truncated]";
-    const charsToRemove = Math.ceil(excess * 4) + truncationSuffix.length;
+    const charsToRemove = Math.ceil(excess * CHARS_PER_TOKEN) + truncationSuffix.length;
     const newCharCount = Math.max(0, ref.charCount - charsToRemove);
 
     // Skip blocks where the suffix alone would make the result longer than the
@@ -1296,7 +1299,7 @@ export function truncateContext(messages: AgentMessage[], tokenBudget: number): 
     if (ref.isStringContent && message.role === "user") {
       const newText = (message.content as string).slice(0, newCharCount) + truncationSuffix;
       result[ref.messageIndex] = { ...message, content: newText };
-      currentTokens -= (ref.charCount - newText.length) / 4;
+      currentTokens -= (ref.charCount - newText.length) / CHARS_PER_TOKEN;
     } else if (!ref.isStringContent) {
       let contentArray: (TextContent | ImageContent | ThinkingContent | ToolCall)[];
       if (result[ref.messageIndex] === messages[ref.messageIndex]) {
@@ -1328,7 +1331,7 @@ export function truncateContext(messages: AgentMessage[], tokenBudget: number): 
       const block = contentArray[ref.blockIndex] as TextContent;
       const newText = block.text.slice(0, newCharCount) + truncationSuffix;
       contentArray[ref.blockIndex] = { ...block, text: newText };
-      currentTokens -= (ref.charCount - newText.length) / 4;
+      currentTokens -= (ref.charCount - newText.length) / CHARS_PER_TOKEN;
     }
   }
 
