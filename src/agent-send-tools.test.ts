@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Pool, QueryResult } from "pg";
-import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "./agent.js";
+import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "./send-tools.js";
 import type { Config } from "./config.js";
 import { initInternalFetch } from "./internal-fetch.js";
 
@@ -205,7 +205,7 @@ describe("send_signal_message — recipient resolution", () => {
     await tool.execute("call-1", { recipient: "+1234567890", message: "hello" });
     expect(capturedQuery.text).toContain("JOIN interlocutors");
     expect(capturedQuery.text).toContain("enabled = true");
-    expect(capturedQuery.text).toContain("service = 'signal'");
+    expect(capturedQuery.text).toContain("service = $2");
   });
 });
 
@@ -291,7 +291,7 @@ describe("send_telegram_message — recipient resolution", () => {
     await tool.execute("call-1", { recipient: "99999", message: "hello" });
     expect(capturedQuery.text).toContain("JOIN interlocutors");
     expect(capturedQuery.text).toContain("enabled = true");
-    expect(capturedQuery.text).toContain("service = 'telegram'");
+    expect(capturedQuery.text).toContain("service = $2");
   });
 });
 
@@ -410,7 +410,7 @@ describe("send_whatsapp_message — recipient resolution", () => {
     await tool.execute("call-1", { recipient: "+1234567890", message: "hello" });
     expect(capturedQuery.text).toContain("JOIN interlocutors");
     expect(capturedQuery.text).toContain("enabled = true");
-    expect(capturedQuery.text).toContain("service = 'whatsapp'");
+    expect(capturedQuery.text).toContain("service = $2");
   });
 });
 
@@ -531,7 +531,7 @@ describe("send_email — recipient resolution", () => {
     await tool.execute("call-1", { recipient: "test@example.com", subject: "Hi", message: "hello" });
     expect(capturedQuery.text).toContain("JOIN interlocutors");
     expect(capturedQuery.text).toContain("enabled = true");
-    expect(capturedQuery.text).toContain("service = 'email'");
+    expect(capturedQuery.text).toContain("service = $2");
   });
 
   it("normalizes recipient email to lowercase before allowlist check", async () => {
