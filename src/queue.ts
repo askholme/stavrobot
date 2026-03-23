@@ -1,7 +1,7 @@
 import type pg from "pg";
 import type { Agent, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Config } from "./config.js";
-import { handlePrompt, formatUserMessage } from "./agent.js";
+import { handlePrompt, formatUserMessage } from "./agent/index.js";
 import { AbortError } from "./errors.js";
 import { AuthError } from "./auth.js";
 import { isInAllowlist } from "./allowlist.js";

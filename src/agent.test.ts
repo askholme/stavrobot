@@ -2,7 +2,7 @@ import { describe, it, expect, vi, type MockedFunction, beforeEach } from "vites
 import type { Agent, AgentMessage, AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { complete } from "@mariozechner/pi-ai";
 import type { Pool } from "pg";
-import { serializeMessagesForSummary, filterToolsForSubagent, formatPluginListSection, truncateContext, createManageKnowledgeTool, injectAutoSearchBlock, pendingAutoSearchBlocks, handlePrompt, createAgent, escalatingSummarize, selectCompactionCutIndex, isTurnBoundary } from "./agent.js";
+import { serializeMessagesForSummary, filterToolsForSubagent, formatPluginListSection, truncateContext, createManageKnowledgeTool, injectAutoSearchBlock, pendingAutoSearchBlocks, handlePrompt, createAgent, escalatingSummarize, selectCompactionCutIndex, isTurnBoundary } from "./agent/index.js";
 import { getApiKey } from "./auth.js";
 import { loadMessages, loadAllMemories, loadAllScratchpadTitles, getMainAgentId } from "./database.js";
 import { runSearch } from "./search.js";

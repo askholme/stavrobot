@@ -1,94 +1,80 @@
 import fs from "node:fs/promises";
 import pg from "pg";
-import { Type, getModel, type TextContent, type ImageContent, type AssistantMessage, type ToolCall, type ThinkingContent, complete, type Api, type Model } from "@mariozechner/pi-ai";
+import { Type, getModel, type TextContent, type ImageContent, type AssistantMessage, type ToolCall } from "@mariozechner/pi-ai";
 import { Agent, type AgentTool, type AgentToolResult, type AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Config } from "./config.js";
-import type { FileAttachment } from "./uploads.js";
-import { getApiKey } from "./auth.js";
-import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, readScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, getMainAgentId, loadAgent, type Memory } from "./database.js";
-import type { RoutingResult } from "./queue.js";
-import { reloadScheduler } from "./scheduler.js";
-import { createManagePluginsTool, createRunPluginToolTool, createRequestCodingTaskTool } from "./plugin-tools.js";
-import { createRunPythonTool } from "./python.js";
-import { createManagePagesTool } from "./pages.js";
-import { createManageFilesTool } from "./files.js";
-import { createManageInterlocutorsTool } from "./interlocutors.js";
-import { createManageAgentsTool } from "./agents.js";
-import { createSendAgentMessageTool } from "./send-agent-message.js";
-import { createSearchTool, runSearch, type SearchResults } from "./search.js";
-import { extractText } from "./embeddings.js";
-import { createManageUploadsTool } from "./upload-tools.js";
-import { internalFetch } from "./internal-fetch.js";
-import { encodeToToon } from "./toon.js";
-import { log } from "./log.js";
-import { AbortError } from "./errors.js";
-import { toolError, toolSuccess } from "./tool-result.js";
-import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "./send-tools.js";
-export { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
-export { AbortError } from "./errors.js";
-export { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "./send-tools.js";
+import type { Config } from "../config.js";
+import type { FileAttachment } from "../uploads.js";
+import { getApiKey } from "../auth.js";
+import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, readScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, getMainAgentId, loadAgent, type Memory } from "../database.js";
+import type { RoutingResult } from "../queue.js";
+import { reloadScheduler } from "../scheduler.js";
+import { createManagePluginsTool, createRunPluginToolTool, createRequestCodingTaskTool } from "../plugin-tools.js";
+import { createRunPythonTool } from "../python.js";
+import { createManagePagesTool } from "../pages.js";
+import { createManageFilesTool } from "../files.js";
+import { createManageInterlocutorsTool } from "../interlocutors.js";
+import { createManageAgentsTool } from "../agents.js";
+import { createSendAgentMessageTool } from "../send-agent-message.js";
+import { createSearchTool, runSearch } from "../search.js";
+import { createManageUploadsTool } from "../upload-tools.js";
+import { encodeToToon } from "../toon.js";
+import { log } from "../log.js";
+import { AbortError } from "../errors.js";
+import { toolError, toolSuccess } from "../tool-result.js";
+import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "../send-tools.js";
+import {
+  buildPromptSuffix,
+  AUTO_SEARCH_MIN_LENGTH,
+  AUTO_SEARCH_LIMIT,
+  AUTO_SEARCH_SOURCES,
+  buildAutoSearchBlock,
+  pendingAutoSearchBlocks,
+  estimateTokens,
+  truncateContext,
+  injectAutoSearchBlock,
+  serializeMessagesForSummary,
+  escalatingSummarize,
+  selectCompactionCutIndex,
+} from "./compaction.js";
+import {
+  filterToolsForSubagent,
+  buildPluginAccessMap,
+  fetchPluginList,
+  fetchPluginDetails,
+  formatPluginListSection,
+  type PluginEntry,
+} from "./plugins.js";
+export { TEMP_ATTACHMENTS_DIR } from "../temp-dir.js";
+export { AbortError } from "../errors.js";
+export { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "../send-tools.js";
 
-function buildPromptSuffix(publicHostname: string): string {
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? process.env.TZ ?? "UTC";
-  return `\n\nYour external hostname is ${publicHostname}. All times are in ${timezone}. Do not convert times to other timezones unless explicitly asked, or the user is in another timezone.`;
-}
-
-const AUTO_SEARCH_MIN_LENGTH = 10;
-const AUTO_SEARCH_LIMIT = 5;
-const AUTO_SEARCH_SNIPPET_LENGTH = 200;
-const AUTO_SEARCH_SOURCES = ["signal", "telegram", "whatsapp", "email"];
-
-function buildKeywordSnippet(text: string, query: string): string {
-  const words = query.split(/\s+/).filter((word) => word.length > 2);
-  const lowerText = text.toLowerCase();
-
-  let anchorPosition = -1;
-  for (const word of words) {
-    const position = lowerText.indexOf(word.toLowerCase());
-    if (position !== -1) {
-      anchorPosition = position;
-      break;
-    }
-  }
-
-  const start = anchorPosition === -1
-    ? 0
-    : Math.max(0, anchorPosition - Math.floor(AUTO_SEARCH_SNIPPET_LENGTH / 2));
-  const end = Math.min(text.length, start + AUTO_SEARCH_SNIPPET_LENGTH);
-
-  const prefix = start > 0 ? "..." : "";
-  const suffix = end < text.length ? "..." : "";
-  return `${prefix}${text.slice(start, end)}${suffix}`;
-}
-
-function buildAutoSearchBlock(results: SearchResults, query: string): string {
-  const parts: string[] = ["[Auto-search results for context — do not mention these to the user unless relevant]"];
-
-  for (const tableResult of results.tableResults) {
-    parts.push("");
-    parts.push(`Table: ${tableResult.tableName} (${tableResult.matchCount} match(es))`);
-    for (const row of tableResult.rows) {
-      const rowText = Object.values(row)
-        .filter((value): value is string => typeof value === "string")
-        .join(" ");
-      parts.push(`- ${buildKeywordSnippet(rowText, query)}`);
-    }
-  }
-
-  if (results.messages.length > 0) {
-    parts.push("");
-    parts.push(`Messages (${results.messages.length} match(es)):`);
-    for (const message of results.messages) {
-      const timestamp = message.created_at.toISOString();
-      const rawContent = (message.content as { content?: unknown }).content ?? message.content;
-      const text = extractText(rawContent);
-      const snippet = buildKeywordSnippet(text, query);
-      parts.push(`- [${timestamp}] ${message.role}: ${snippet}`);
-    }
-  }
-
-  return parts.join("\n");
-}
+// Re-export everything from the extracted modules so external importers that
+// import from "./agent.js" continue to work without changes.
+export {
+  buildPromptSuffix,
+  AUTO_SEARCH_MIN_LENGTH,
+  AUTO_SEARCH_LIMIT,
+  AUTO_SEARCH_SNIPPET_LENGTH,
+  AUTO_SEARCH_SOURCES,
+  buildAutoSearchBlock,
+  pendingAutoSearchBlocks,
+  CHARS_PER_TOKEN,
+  estimateTokens,
+  isTurnBoundary,
+  selectCompactionCutIndex,
+  truncateContext,
+  injectAutoSearchBlock,
+  serializeMessagesForSummary,
+  escalatingSummarize,
+} from "./compaction.js";
+export {
+  filterToolsForSubagent,
+  buildPluginAccessMap,
+  fetchPluginList,
+  fetchPluginDetails,
+  formatPluginListSection,
+} from "./plugins.js";
+export type { PluginEntry } from "./plugins.js";
 
 // A simple boolean flag to prevent concurrent compaction runs. If a compaction
 // is already in progress when another request triggers the threshold, we skip
@@ -105,12 +91,6 @@ let compactionCompletedForAgent: number | null = null;
 // each handlePrompt call. The queue is single-threaded so there is no race
 // condition. The send_agent_message tool reads this to identify the sender.
 export let currentAgentId: number = 0;
-
-// Holds the auto-search block for the current turn, keyed by Agent instance.
-// Using a WeakMap ensures each Agent's pending block is isolated from others,
-// and entries are garbage-collected when the Agent is no longer referenced.
-// Exported for testing only.
-export const pendingAutoSearchBlocks = new WeakMap<Agent, string | undefined>();
 
 export function createExecuteSqlTool(pool: pg.Pool): AgentTool {
   return {
@@ -417,296 +397,6 @@ function wrapToolWithLogging(tool: AgentTool): AgentTool {
   };
 }
 
-// Conservative estimate: structured data and non-English text tokenize at
-// closer to 3 chars/token rather than the 4 chars/token typical of English prose.
-const CHARS_PER_TOKEN = 3;
-
-// Images use a fixed 1000-token estimate because actual cost depends on
-// resolution, which we don't have at this point.
-function estimateBlockTokens(block: TextContent | ImageContent | ThinkingContent | ToolCall): number {
-  if (block.type === "text") {
-    return block.text.length / CHARS_PER_TOKEN;
-  }
-  if (block.type === "image") {
-    return 1000;
-  }
-  if (block.type === "thinking") {
-    return block.thinking.length / CHARS_PER_TOKEN;
-  }
-  return JSON.stringify(block.arguments).length / CHARS_PER_TOKEN;
-}
-
-export function estimateTokens(messages: AgentMessage[]): number {
-  let total = 0;
-  for (const message of messages) {
-    if (message.role === "user") {
-      if (typeof message.content === "string") {
-        total += message.content.length / CHARS_PER_TOKEN;
-      } else {
-        for (const block of message.content) {
-          total += estimateBlockTokens(block);
-        }
-      }
-    } else if (message.role === "assistant") {
-      for (const block of message.content) {
-        total += estimateBlockTokens(block);
-      }
-    } else if (message.role === "toolResult") {
-      for (const block of message.content) {
-        total += estimateBlockTokens(block);
-      }
-    }
-  }
-  return total;
-}
-
-// Returns true if messages[index] is a user message at a turn boundary — i.e.,
-// a safe place to cut the conversation history. A user message is a turn
-// boundary when:
-//   - It is the first message (index 0), OR
-//   - The previous message is also a user message (consecutive user messages), OR
-//   - The previous message is an assistant message with no toolCall blocks.
-//
-// Steering injects user messages mid-turn (between an assistant toolCall and its
-// toolResult). Cutting there would orphan the toolResult and cause a 400 from the
-// Anthropic API. Those injected messages are NOT turn boundaries.
-export function isTurnBoundary(messages: AgentMessage[], index: number): boolean {
-  if (messages[index].role !== "user") {
-    return false;
-  }
-  if (index === 0) {
-    return true;
-  }
-  const previous = messages[index - 1];
-  if (previous.role === "user") {
-    return true;
-  }
-  if (previous.role === "assistant") {
-    const hasToolCall = (previous.content as Array<{ type: string }>).some((block) => block.type === "toolCall");
-    return !hasToolCall;
-  }
-  // Previous message is a toolResult — we are mid-turn.
-  return false;
-}
-
-// Selects the index of the first message to keep after compaction, or null if
-// no safe cut point exists. The cut always lands on a turn-boundary user message
-// so the compacted slice never ends mid-tool-use/tool-result pair.
-//
-// The algorithm walks backward from the end of messages accumulating tokens
-// until the keep budget (50% of threshold) is exceeded, then advances forward
-// to the next turn-boundary user message. If no such message exists forward of
-// the cut, it falls back to scanning backward for the nearest earlier one. If
-// there are no turn-boundary user messages at all, null is returned and
-// compaction is skipped.
-export function selectCompactionCutIndex(messages: AgentMessage[], compactionTokenThreshold: number): number | null {
-  const keepTokenBudget = compactionTokenThreshold * 0.5;
-  let accumulatedTokens = 0;
-  let cutIndex = messages.length;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const messageTokens = estimateTokens([messages[i]]);
-    if (accumulatedTokens + messageTokens > keepTokenBudget) {
-      cutIndex = i + 1;
-      break;
-    }
-    accumulatedTokens += messageTokens;
-    cutIndex = i;
-  }
-
-  if (cutIndex === 0) {
-    return null;
-  }
-
-  // Advance forward to the next turn-boundary user message.
-  while (cutIndex < messages.length && !isTurnBoundary(messages, cutIndex)) {
-    cutIndex++;
-  }
-
-  if (cutIndex < messages.length) {
-    return cutIndex;
-  }
-
-  // No turn-boundary user message found forward — scan backward to find the
-  // nearest earlier one. This compacts less of the history (keeps more) but
-  // still makes progress.
-  let backwardIndex = cutIndex - 1;
-  while (backwardIndex >= 0 && !isTurnBoundary(messages, backwardIndex)) {
-    backwardIndex--;
-  }
-  if (backwardIndex <= 0) {
-    return null;
-  }
-  log.info(`[stavrobot] Forward scan found no user message, fell back to backward scan (cutIndex=${backwardIndex}).`);
-  return backwardIndex;
-}
-
-// Messages and blocks are copied only when modified to avoid mutating the
-// caller's data.
-export function truncateContext(messages: AgentMessage[], tokenBudget: number): AgentMessage[] {
-  if (estimateTokens(messages) <= tokenBudget) {
-    return messages;
-  }
-
-  type TextBlockRef = {
-    messageIndex: number;
-    blockIndex: number;
-    // For user messages with string content, blockIndex is -1.
-    isStringContent: boolean;
-    charCount: number;
-  };
-
-  const textBlocks: TextBlockRef[] = [];
-
-  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
-    const message = messages[messageIndex];
-    if (message.role === "user") {
-      if (typeof message.content === "string") {
-        textBlocks.push({ messageIndex, blockIndex: -1, isStringContent: true, charCount: message.content.length });
-      } else {
-        for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
-          const block = message.content[blockIndex];
-          if (block.type === "text") {
-            textBlocks.push({ messageIndex, blockIndex, isStringContent: false, charCount: block.text.length });
-          }
-        }
-      }
-    } else if (message.role === "assistant") {
-      for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
-        const block = message.content[blockIndex];
-        if (block.type === "text") {
-          textBlocks.push({ messageIndex, blockIndex, isStringContent: false, charCount: block.text.length });
-        }
-      }
-    } else if (message.role === "toolResult") {
-      for (let blockIndex = 0; blockIndex < message.content.length; blockIndex++) {
-        const block = message.content[blockIndex];
-        if (block.type === "text") {
-          textBlocks.push({ messageIndex, blockIndex, isStringContent: false, charCount: block.text.length });
-        }
-      }
-    }
-  }
-
-  // Largest blocks first: trimming them is most likely to bring us under budget
-  // in a single pass, reducing the number of blocks we need to touch.
-  textBlocks.sort((a, b) => b.charCount - a.charCount);
-
-  const result: AgentMessage[] = [...messages];
-  let currentTokens = estimateTokens(messages);
-
-  for (const ref of textBlocks) {
-    if (currentTokens <= tokenBudget) {
-      break;
-    }
-
-    const excess = currentTokens - tokenBudget;
-    const truncationSuffix = "\n[truncated]";
-    const charsToRemove = Math.ceil(excess * CHARS_PER_TOKEN) + truncationSuffix.length;
-    const newCharCount = Math.max(0, ref.charCount - charsToRemove);
-
-    // Skip blocks where the suffix alone would make the result longer than the
-    // original, which would increase token usage instead of reducing it.
-    if (newCharCount + truncationSuffix.length >= ref.charCount) {
-      continue;
-    }
-
-    const message = result[ref.messageIndex];
-
-    if (ref.isStringContent && message.role === "user") {
-      const newText = (message.content as string).slice(0, newCharCount) + truncationSuffix;
-      result[ref.messageIndex] = { ...message, content: newText };
-      currentTokens -= (ref.charCount - newText.length) / CHARS_PER_TOKEN;
-    } else if (!ref.isStringContent) {
-      let contentArray: (TextContent | ImageContent | ThinkingContent | ToolCall)[];
-      if (result[ref.messageIndex] === messages[ref.messageIndex]) {
-        if (message.role === "user" && Array.isArray(message.content)) {
-          contentArray = [...message.content];
-          result[ref.messageIndex] = { ...message, content: contentArray } as AgentMessage;
-        } else if (message.role === "assistant") {
-          contentArray = [...message.content];
-          result[ref.messageIndex] = { ...message, content: contentArray } as AgentMessage;
-        } else if (message.role === "toolResult") {
-          contentArray = [...message.content];
-          result[ref.messageIndex] = { ...message, content: contentArray } as AgentMessage;
-        } else {
-          continue;
-        }
-      } else {
-        const alreadyCopied = result[ref.messageIndex];
-        if (alreadyCopied.role === "user" && Array.isArray(alreadyCopied.content)) {
-          contentArray = alreadyCopied.content as (TextContent | ImageContent)[];
-        } else if (alreadyCopied.role === "assistant") {
-          contentArray = alreadyCopied.content;
-        } else if (alreadyCopied.role === "toolResult") {
-          contentArray = alreadyCopied.content;
-        } else {
-          continue;
-        }
-      }
-
-      const block = contentArray[ref.blockIndex] as TextContent;
-      const newText = block.text.slice(0, newCharCount) + truncationSuffix;
-      contentArray[ref.blockIndex] = { ...block, text: newText };
-      currentTokens -= (ref.charCount - newText.length) / CHARS_PER_TOKEN;
-    }
-  }
-
-  log.info(`[stavrobot] truncateContext: reduced estimated tokens from ${Math.round(estimateTokens(messages))} to ${Math.round(estimateTokens(result))} (budget: ${tokenBudget})`);
-
-  return result;
-}
-
-// Injects the auto-search block ephemerally into the last user message in the
-// context. Returns the messages array unchanged if there is no block or no user
-// message. Does not mutate the original message objects.
-export function injectAutoSearchBlock(messages: AgentMessage[], searchBlock: string | undefined): AgentMessage[] {
-  if (searchBlock === undefined) {
-    return messages;
-  }
-
-  const lastUserIndex = messages.reduce(
-    (found, message, index) => (message.role === "user" ? index : found),
-    -1,
-  );
-
-  if (lastUserIndex === -1) {
-    return messages;
-  }
-
-  const lastUserMessage = messages[lastUserIndex];
-
-  // Narrow to UserMessage: only user messages have string | array content.
-  if (lastUserMessage.role !== "user") {
-    return messages;
-  }
-
-  let updatedMessage: AgentMessage;
-
-  if (typeof lastUserMessage.content === "string") {
-    updatedMessage = { ...lastUserMessage, content: `${lastUserMessage.content}\n\n${searchBlock}` };
-  } else {
-    // Array content: find the last text block and append to it, or add a new one.
-    const contentArray = [...lastUserMessage.content];
-    const lastTextIndex = contentArray.reduce(
-      (found, block, index) => (block.type === "text" ? index : found),
-      -1,
-    );
-
-    if (lastTextIndex !== -1) {
-      const textBlock = contentArray[lastTextIndex] as TextContent;
-      contentArray[lastTextIndex] = { ...textBlock, text: `${textBlock.text}\n\n${searchBlock}` };
-    } else {
-      contentArray.push({ type: "text", text: searchBlock });
-    }
-
-    updatedMessage = { ...lastUserMessage, content: contentArray };
-  }
-
-  const result = [...messages];
-  result[lastUserIndex] = updatedMessage;
-  return result;
-}
-
 export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent> {
   const model = getModel(config.provider as any, config.model as any);
   const tools = [createExecuteSqlTool(pool), createManageKnowledgeTool(pool), createSendSignalMessageTool(pool, config), createManageCronTool(pool), createRunPythonTool(), createManagePagesTool(pool), createManageUploadsTool(), createSearchTool(pool, config.embeddings), createManageFilesTool(), createManageInterlocutorsTool(pool), createManageAgentsTool(pool), createSendAgentMessageTool(pool, () => currentAgentId)];
@@ -762,148 +452,6 @@ export async function createAgent(config: Config, pool: pg.Pool): Promise<Agent>
   return agent;
 }
 
-export function serializeMessagesForSummary(messages: AgentMessage[]): string {
-  const lines: string[] = [];
-
-  for (const message of messages) {
-    if (message.role === "user") {
-      let textContent: string;
-      if (typeof message.content === "string") {
-        textContent = message.content;
-      } else {
-        const content = Array.isArray(message.content) ? message.content : [];
-        textContent = content
-          .filter((block): block is TextContent => block.type === "text")
-          .map((block) => block.text)
-          .join("");
-      }
-      lines.push(`User: ${textContent}`);
-    } else if (message.role === "assistant") {
-      const content = Array.isArray(message.content) ? message.content : [];
-      const textContent = content
-        .filter((block): block is TextContent => block.type === "text")
-        .map((block) => block.text)
-        .join("");
-      if (textContent) {
-        lines.push(`Assistant: ${textContent}`);
-      }
-      for (const block of content) {
-        if (block.type === "toolCall") {
-          const toolCall = block as ToolCall;
-          const args = Object.entries(toolCall.arguments)
-            .map(([key, value]) => {
-              if (typeof value === "string") {
-                return `${key}=${JSON.stringify(value)}`;
-              }
-              if (typeof value === "object" && value !== null) {
-                return `${key}=${JSON.stringify(value)}`;
-              }
-              return `${key}=${String(value)}`;
-            })
-            .join(", ");
-          lines.push(`Assistant called ${toolCall.name}(${args})`);
-        }
-      }
-    } else if (message.role === "toolResult") {
-      const content = Array.isArray(message.content) ? message.content : [];
-      const textContent = content
-        .filter((block): block is TextContent => block.type === "text")
-        .map((block) => block.text)
-        .join("");
-      lines.push(`Tool result (${message.toolName}): ${textContent}`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-export async function escalatingSummarize(
-  inputText: string,
-  config: Config,
-  model: Model<Api>,
-  apiKey: string,
-): Promise<string> {
-  const inputLength = inputText.length;
-
-  // Level 1: use the existing compaction prompt.
-  const level1Response = await complete(
-    model,
-    {
-      systemPrompt: config.compactionPrompt,
-      messages: [
-        {
-          role: "user" as const,
-          content: [
-            "Summarize the conversation inside <conversation> tags according to your system instructions.",
-            "",
-            "<conversation>",
-            inputText,
-            "</conversation>",
-          ].join("\n"),
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    { apiKey, temperature: 0.1 },
-  );
-
-  const level1Text = level1Response.content
-    .filter((block): block is TextContent => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-
-  if (level1Text.length < inputLength) {
-    return level1Text;
-  }
-
-  // Level 2: bullet-point prompt targeting half the input's estimated token count.
-  const targetTokens = Math.round(inputLength / 3 / 2);
-  log.info(`[stavrobot] Compaction level 1 failed (summary ${level1Text.length} chars >= input ${inputLength} chars), attempting level 2 bullet-point summary (target: ${targetTokens} tokens).`);
-
-  const bulletPrompt = config.compactionBulletPrompt.replace("{target}", String(targetTokens));
-
-  const level2Response = await complete(
-    model,
-    {
-      systemPrompt: bulletPrompt,
-      messages: [
-        {
-          role: "user" as const,
-          content: [
-            "Summarize the conversation inside <conversation> tags according to your system instructions.",
-            "",
-            "<conversation>",
-            inputText,
-            "</conversation>",
-          ].join("\n"),
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    { apiKey, temperature: 0.1 },
-  );
-
-  const level2Text = level2Response.content
-    .filter((block): block is TextContent => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-
-  if (level2Text.length < inputLength) {
-    return level2Text;
-  }
-
-  // Level 3: deterministic truncation — no LLM call.
-  log.info(`[stavrobot] Compaction level 2 failed (summary ${level2Text.length} chars >= input ${inputLength} chars), falling back to level 3 truncation.`);
-
-  const suffix = "\n[truncated due to compaction failure]";
-  // Guarantee the result is strictly shorter than the input. If the input is
-  // shorter than the suffix itself (an extreme edge case that should never
-  // occur in practice), just return the suffix — the input was tiny and
-  // shouldn't have triggered compaction.
-  const truncateLength = Math.max(0, inputLength - suffix.length - 1);
-  return inputText.slice(0, truncateLength) + suffix;
-}
-
 function formatDate(date: Date): string {
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const day = days[date.getDay()];
@@ -921,245 +469,6 @@ export function formatUserMessage(userMessage: string, source?: string, sender?:
   const resolvedSource = source ?? "cli";
   const resolvedSender = sender ?? "unknown";
   return `Time: ${time}\nSource: ${resolvedSource}\nSender: ${resolvedSender}\nText: ${userMessage}`;
-}
-
-const PLUGIN_RUNNER_BASE_URL = "http://plugin-runner:3003";
-
-/**
- * Parses an allowed_tools list and returns the filtered (and possibly wrapped)
- * tool list for a subagent. `send_agent_message` is always included.
- *
- * Entries without a dot grant full access to that tool. Entries with a dot
- * (e.g. "manage_interlocutors.list") restrict the tool to only the named
- * action. Multiple dotted entries for the same tool combine. A bare name
- * takes precedence over any dotted entries for the same tool.
- *
- * `run_plugin_tool` is controlled exclusively by `allowedPlugins`, not by
- * `allowedTools`. If `allowedPlugins` is empty, `run_plugin_tool` is excluded.
- * If it contains `"*"`, `run_plugin_tool` is included as-is. Otherwise,
- * `run_plugin_tool` is included with its execute wrapped to enforce access.
- */
-export function filterToolsForSubagent(tools: AgentTool[], allowedTools: string[], allowedPlugins: string[]): AgentTool[] {
-  // Always include send_agent_message regardless of the whitelist.
-  const fullyAllowed = new Set<string>(["send_agent_message"]);
-  const actionMap = new Map<string, Set<string>>();
-
-  for (const entry of allowedTools) {
-    const dotIndex = entry.indexOf(".");
-    if (dotIndex === -1) {
-      // run_plugin_tool is controlled by allowedPlugins, not allowedTools.
-      if (entry !== "run_plugin_tool") {
-        fullyAllowed.add(entry);
-      }
-    } else {
-      const toolName = entry.slice(0, dotIndex);
-      const action = entry.slice(dotIndex + 1);
-      if (!actionMap.has(toolName)) {
-        actionMap.set(toolName, new Set());
-      }
-      actionMap.get(toolName)!.add(action);
-    }
-  }
-
-  const result: AgentTool[] = [];
-
-  for (const tool of tools) {
-    if (tool.name === "run_plugin_tool") {
-      // run_plugin_tool is handled separately based on allowedPlugins.
-      if (allowedPlugins.length === 0) {
-        // No plugin access: exclude run_plugin_tool entirely.
-        continue;
-      }
-      if (allowedPlugins.includes("*")) {
-        // Wildcard: include as-is, all plugins allowed.
-        result.push(tool);
-      } else {
-        // Specific plugins: wrap execute to enforce per-plugin/tool access.
-        const pluginAccessMap = buildPluginAccessMap(allowedPlugins);
-        const originalExecute = tool.execute;
-        const wrappedTool: AgentTool = {
-          ...tool,
-          execute: async (toolCallId, params, signal, onUpdate) => {
-            const raw = params as Record<string, unknown>;
-            const pluginName = typeof raw["plugin"] === "string" ? raw["plugin"] : undefined;
-            const toolName = typeof raw["tool"] === "string" ? raw["tool"] : undefined;
-            if (pluginName === undefined || toolName === undefined) {
-              return originalExecute(toolCallId, params, signal, onUpdate);
-            }
-            const access = pluginAccessMap.get(pluginName);
-            if (access === undefined) {
-              return toolError(`Plugin '${pluginName}' (tool '${toolName}') is not in this agent's allowed plugins.`);
-            }
-            if (access !== "*" && !access.has(toolName)) {
-              return toolError(`Plugin '${pluginName}' (tool '${toolName}') is not in this agent's allowed plugins.`);
-            }
-            return originalExecute(toolCallId, params, signal, onUpdate);
-          },
-        };
-        result.push(wrappedTool);
-      }
-      continue;
-    }
-
-    if (fullyAllowed.has(tool.name)) {
-      // Bare name entry: include as-is, all actions allowed.
-      result.push(tool);
-    } else if (actionMap.has(tool.name)) {
-      // Dotted entries only: wrap execute to enforce action-level filtering.
-      const allowedActions = actionMap.get(tool.name)!;
-      const toolName = tool.name;
-      const originalExecute = tool.execute;
-      const list = [...allowedActions].sort().join(", ");
-      const wrappedTool: AgentTool = {
-        ...tool,
-        description: `${tool.description} (Restricted to actions: ${list}.)`,
-        execute: async (toolCallId, params, signal, onUpdate) => {
-          const action = (params as Record<string, unknown>)["action"];
-          if (typeof action !== "string") {
-            return toolError(`Tool "${toolName}" requires an action parameter because it is scoped to specific actions. Allowed actions: ${list}.`);
-          }
-          if (!allowedActions.has(action)) {
-            return toolError(`Action "${action}" is not allowed on tool "${toolName}". Allowed actions: ${list}.`);
-          }
-          return originalExecute(toolCallId, params, signal, onUpdate);
-        },
-      };
-      result.push(wrappedTool);
-    }
-    // Otherwise: tool is not in the whitelist, exclude it.
-  }
-
-  return result;
-}
-
-/**
- * Parses an allowedPlugins array into a map of pluginName -> Set<toolName> | "*".
- * A bare plugin name (e.g. "weather") maps to "*" (all tools allowed).
- * A dotted entry (e.g. "weather.get_forecast") maps to a set of allowed tool names.
- * Multiple dotted entries for the same plugin are combined into one set.
- */
-function buildPluginAccessMap(allowedPlugins: string[]): Map<string, Set<string> | "*"> {
-  const map = new Map<string, Set<string> | "*">();
-  for (const entry of allowedPlugins) {
-    const dotIndex = entry.indexOf(".");
-    if (dotIndex === -1) {
-      // Bare plugin name: all tools in this plugin are allowed.
-      map.set(entry, "*");
-    } else {
-      const pluginName = entry.slice(0, dotIndex);
-      const toolName = entry.slice(dotIndex + 1);
-      // A bare entry for the same plugin takes precedence over dotted entries.
-      if (map.get(pluginName) !== "*") {
-        if (!map.has(pluginName)) {
-          map.set(pluginName, new Set());
-        }
-        (map.get(pluginName) as Set<string>).add(toolName);
-      }
-    }
-  }
-  return map;
-}
-
-interface PluginSummary {
-  name: string;
-  description: string;
-  editable: boolean;
-  permissions: string[];
-}
-
-interface PluginEntry {
-  name: string;
-  description: string;
-}
-
-interface PluginManifestTool {
-  name: string;
-  [key: string]: unknown;
-}
-
-interface PluginManifest {
-  tools?: PluginManifestTool[];
-  permissions?: string[];
-  [key: string]: unknown;
-}
-
-async function fetchPluginList(): Promise<PluginEntry[] | undefined> {
-  try {
-    const response = await internalFetch(`${PLUGIN_RUNNER_BASE_URL}/bundles`);
-    if (!response.ok) {
-      log.warn(`[stavrobot] fetchPluginList: plugin runner returned ${response.status}`);
-      return undefined;
-    }
-    const data = await response.json() as { plugins: PluginSummary[] };
-    // Skip plugins with an empty permissions array — they are soft-disabled.
-    // Guard against missing permissions (e.g., during rolling deploys) by treating it as visible.
-    const visiblePlugins = data.plugins.filter((plugin) => !Array.isArray(plugin.permissions) || plugin.permissions.length > 0);
-    return visiblePlugins.map((plugin) => ({ name: plugin.name, description: plugin.description }));
-  } catch (error) {
-    log.warn("[stavrobot] fetchPluginList: failed to fetch plugin list:", error instanceof Error ? error.message : String(error));
-    return undefined;
-  }
-}
-
-/**
- * Fetches the manifest for each plugin and returns a map of plugin name to the
- * list of tool names the agent is allowed to use. The `accessMap` controls which
- * tools are visible: a "*" entry means all tools in the manifest are included,
- * while a Set entry restricts to only those tool names. Fetches are done in
- * parallel; failures for individual plugins are logged and skipped.
- */
-async function fetchPluginDetails(
-  pluginNames: string[],
-  accessMap: Map<string, Set<string> | "*">,
-): Promise<Map<string, string[]>> {
-  const results = await Promise.all(
-    pluginNames.map(async (name): Promise<[string, string[]] | null> => {
-      try {
-        const response = await internalFetch(`${PLUGIN_RUNNER_BASE_URL}/bundles/${name}`);
-        if (!response.ok) {
-          log.warn(`[stavrobot] fetchPluginDetails: plugin runner returned ${response.status} for plugin "${name}"`);
-          return null;
-        }
-        const manifest = await response.json() as PluginManifest;
-        const allTools = manifest.tools ?? [];
-        const access = accessMap.get(name);
-        let visibleTools: string[];
-        if (access === "*") {
-          visibleTools = allTools.map((tool) => tool.name);
-        } else if (access instanceof Set) {
-          // Only include tools the agent has explicit access to.
-          visibleTools = allTools.map((tool) => tool.name).filter((toolName) => (access as Set<string>).has(toolName));
-        } else {
-          visibleTools = [];
-        }
-        return [name, visibleTools];
-      } catch (error) {
-        log.warn(`[stavrobot] fetchPluginDetails: failed to fetch manifest for plugin "${name}":`, error instanceof Error ? error.message : String(error));
-        return null;
-      }
-    }),
-  );
-  const map = new Map<string, string[]>();
-  for (const result of results) {
-    if (result !== null) {
-      map.set(result[0], result[1]);
-    }
-  }
-  return map;
-}
-
-export function formatPluginListSection(plugins: PluginEntry[], toolDetails?: Map<string, string[]>): string {
-  const lines = ["Available plugins:"];
-  for (const plugin of plugins) {
-    lines.push(`- ${plugin.name}: ${plugin.description}`);
-    if (toolDetails !== undefined) {
-      const tools = toolDetails.get(plugin.name);
-      if (tools !== undefined && tools.length > 0) {
-        lines.push(`  Tools: ${tools.join(", ")}`);
-      }
-    }
-  }
-  return lines.join("\n");
 }
 
 export async function handlePrompt(

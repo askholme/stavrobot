@@ -6,7 +6,7 @@ import { loadAllowlist } from "./allowlist.js";
 import { initInternalFetch } from "./internal-fetch.js";
 import { startBackgroundTokenRefresh } from "./auth.js";
 import { connectDatabase, initializeSchema, initializeMemoriesSchema, initializeCompactionsSchema, initializeCronSchema, seedCronEntries, initializePagesSchema, initializeScratchpadSchema, initializeAgentsSchema, initializeEmbeddingsSchema, seedOwner, getPageByPath, getPageQueryByPath } from "./database.js";
-import { createAgent } from "./agent.js";
+import { createAgent } from "./agent/index.js";
 import { initializeQueue, enqueueMessage } from "./queue.js";
 import { initializeScheduler } from "./scheduler.js";
 import { initializeEmbeddingsWorker } from "./embeddings.js";

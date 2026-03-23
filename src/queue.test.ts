@@ -7,7 +7,7 @@ import { AbortError } from "./errors.js";
 import type { RoutingResult } from "./queue.js";
 
 // Mock the modules that processQueue depends on so tests don't need real infrastructure.
-vi.mock("./agent.js", () => ({
+vi.mock("./agent/index.js", () => ({
   handlePrompt: vi.fn(),
   formatUserMessage: vi.fn((message: string, source?: string) => `[${source ?? "cli"}] ${message}`),
 }));
@@ -28,7 +28,7 @@ vi.mock("./allowlist.js", () => ({
   isInAllowlist: vi.fn().mockReturnValue(false),
 }));
 
-import { handlePrompt, formatUserMessage } from "./agent.js";
+import { handlePrompt, formatUserMessage } from "./agent/index.js";
 import { getMainAgentId, isOwnerIdentity, resolveInterlocutor } from "./database.js";
 import { isInAllowlist } from "./allowlist.js";
 import { initializeQueue, enqueueMessage } from "./queue.js";
