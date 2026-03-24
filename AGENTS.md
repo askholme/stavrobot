@@ -271,11 +271,13 @@ changes.  This file is the plugin authoring guide used by the coder agent.
 
 ## Pages
 
-- The `pages` table stores HTML pages created by the LLM agent. Schema: `path` (unique text, the URL path), `title` (text), `content` (HTML), `is_public` (boolean, default false).
-- Pages are served at `GET /pages/<path>`.
-- `is_public` controls whether authentication is required to view a page. When false (the default), the route handler returns 401 for unauthenticated requests.
-- The LLM agent creates and updates pages via `execute_sql` — there is no dedicated API endpoint for page management.
-- The `/pages/` prefix is whitelisted in `isPublicRoute` so the route is reachable without a session cookie, but the route handler itself enforces auth for pages where `is_public` is false.
+- The `pages` table schema: `id` (serial PK), `path` (text), `version` (integer), `mimetype` (text), `data` (BYTEA), `is_public` (boolean, default false), `queries` (JSONB, nullable), `created_at` (timestamptz). Unique constraint on `(path, version)`.
+- Versioning model: every edit inserts a new version row; a delete inserts a tombstone (empty data). Old versions are never removed.
+- Pages are served at `GET /pages/<path>` — the latest version is returned. If the latest version is a tombstone (empty data), the page is treated as deleted (404).
+- `is_public` controls auth: false requires authentication, true is publicly accessible.
+- The LLM agent manages pages via the `manage_pages` tool (not `execute_sql`).
+- The `/pages/` prefix is whitelisted in `isPublicRoute` so the route is reachable without a session cookie, but the route handler enforces auth for non-public pages.
+- Named queries: pages can define SQL queries in the `queries` JSONB column, fetchable via `GET /api/pages/<path>/queries/<name>`.
 
 ## General rules
 

@@ -22,7 +22,27 @@ On an existing page, omit any field to keep its current value. On a new page, co
 
 The queries parameter maps query names to SQL strings (SELECT/WITH only). Use $param:name placeholders for parameters the client supplies via query string. Page JS fetches data via GET /api/pages/<path>/queries/<name>?param1=value1. The response is a JSON array of row objects. For private pages the endpoint requires authentication (the browser is already authenticated by the page load); for public pages no authentication is needed.
 
-Security constraint: NEVER set is_public to true unless the user has *explicitly* and *unambiguously* said they want THIS SPECIFIC PAGE publicly accessible. Default to false. Only set true if the user says something clearly intentional such as "make this page public". When in doubt, keep it private.`;
+Security constraint: NEVER set is_public to true unless the user has *explicitly* and *unambiguously* said they want THIS SPECIFIC PAGE publicly accessible. Default to false. Only set true if the user says something clearly intentional such as "make this page public". When in doubt, keep it private.
+
+Static page model: pages are entirely static. The content string is served byte-for-byte as the HTTP response body. There is no server-side rendering, no templating engine, no data injection. Do not assume any server-provided variables like window.__PAGE_DATA__ exist — they don't. All dynamic data must be loaded client-side via JavaScript fetch calls to the query API.
+
+Data fetching pattern:
+
+  const response = await fetch("/api/pages/my-page/queries/my_query?param1=value1");
+  const rows = await response.json(); // Array of row objects
+
+The response is always a JSON array of row objects. For parameterized queries, pass values as URL query string parameters matching the $param:name placeholders defined in the queries map. For private pages, the browser is already authenticated by the page load, so fetches to the query endpoint work without extra auth handling.
+
+Styling and dark mode: pages should match the app's visual identity. There is no external stylesheet — embed all CSS in the page's <style> tag. Follow these conventions:
+- Use CSS custom properties on :root for all colors, and override them in a @media (prefers-color-scheme: dark) block for automatic dark mode.
+- Light theme: neutral gray background (#f8f9fa), white card surfaces, dark text (#1a1a1a). Dark theme: dark background (#1a1a1a), dark gray surfaces (#2a2a2a), light text (#e8e8e8).
+- Accent color: amber (light: #d97706, dark: #f59e0b). Use for links, primary buttons, focus rings, and highlights.
+- Font: system font stack (-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif).
+- Cards: white/dark surface background, subtle box-shadow, 8px border-radius, 16px padding.
+- Buttons: 6px border-radius, 8px 16px padding, smooth transitions. Primary buttons use the accent color with white text.
+- Input focus: accent-colored border with a subtle accent glow ring.
+- Layout: centered single-column for most pages, mobile-responsive (adjust padding at 480px breakpoint).
+- Always include a box-sizing: border-box reset.`;
 
 export function createManagePagesTool(pool: pg.Pool): AgentTool {
   return {
