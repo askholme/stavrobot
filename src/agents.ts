@@ -48,6 +48,7 @@ list — List all agents. No parameters.
 Guidance on creating subagents:
 
 - Give agents the minimum tool privileges needed for their task. Start with fewer tools; the subagent can ask for more via send_agent_message.
+- Match the channel tool to the task. If the subagent's job is to handle an email conversation, give it send_email — not send_signal_message. A subagent can only message its assigned interlocutor, so the tool must match the channel the interlocutor uses.
 - send_agent_message is always available to all agents regardless of their allowed_tools list — do not include it in the list.
 - The allowed_tools field is a whitelist: [] means no tools, and an explicit list like ["send_telegram_message"] means only those tools. Use dot notation to restrict to specific actions: ["manage_uploads.read", "manage_uploads.write"] allows only read and write.
 - Always scope plugin access to the specific tools needed. Use dot notation: ["caldav.list_events", "caldav.get_event"] rather than ["caldav"]. Granting a whole plugin or ["*"] gives the subagent access to every tool in that plugin, including destructive ones — only do this when every tool is genuinely needed.

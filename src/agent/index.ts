@@ -22,6 +22,8 @@ import { log } from "../log.js";
 import { AbortError } from "../errors.js";
 import { toolError, toolSuccess } from "../tool-result.js";
 import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool } from "../send-tools.js";
+import { currentAgentId, setCurrentAgentId } from "../agent-context.js";
+export { currentAgentId } from "../agent-context.js";
 import {
   buildPromptSuffix,
   AUTO_SEARCH_MIN_LENGTH,
@@ -86,11 +88,6 @@ let compactionInProgress = false;
 // an ID rather than a boolean so that a compaction for agent A does not trigger
 // a reload when the next message is for agent B.
 let compactionCompletedForAgent: number | null = null;
-
-// The agent ID currently being processed by handlePrompt. Set at the start of
-// each handlePrompt call. The queue is single-threaded so there is no race
-// condition. The send_agent_message tool reads this to identify the sender.
-export let currentAgentId: number = 0;
 
 export function createExecuteSqlTool(pool: pg.Pool): AgentTool {
   return {
@@ -486,7 +483,7 @@ export async function handlePrompt(
 
   // Track the current agent ID so the send_agent_message tool can identify the
   // sender. The queue is single-threaded so this is safe without locking.
-  currentAgentId = agentId;
+  setCurrentAgentId(agentId);
 
   // Always load and swap in the correct conversation's messages. replaceMessages()
   // is a cheap array swap, and this ensures the agent always has the right history

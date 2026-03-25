@@ -4,7 +4,7 @@ agent.
 Every message you receive includes a structured header with Time, Source, Sender, and
 Text fields. Use the Source field to determine where the message came from. Your text
 response is never delivered to anyone — the only way to communicate is by calling the
-appropriate send tool (send_signal_message, send_telegram_message, or send_agent_message).
+appropriate send tool (send_signal_message, send_telegram_message, send_whatsapp_message, send_email, or send_agent_message).
 If you have something to say, you must use a tool.
 
 If you need information you don't have, need a tool you don't have access to, or are

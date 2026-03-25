@@ -5,7 +5,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Config } from "./config.js";
 import { isInAllowlist } from "./allowlist.js";
-import { resolveRecipient, resolveInterlocutorByName } from "./database.js";
+import { resolveRecipient, resolveInterlocutorByName, getMainAgentId } from "./database.js";
 import { convertMarkdownToTelegramHtml } from "./telegram.js";
 import { sendSignalMessage } from "./signal.js";
 import { sendTelegramMessage } from "./telegram-api.js";
@@ -15,6 +15,7 @@ import { sendEmail } from "./email-api.js";
 import { TEMP_ATTACHMENTS_DIR } from "./temp-dir.js";
 import { log } from "./log.js";
 import { toolError, toolSuccess } from "./tool-result.js";
+import { currentAgentId } from "./agent-context.js";
 
 function signalRateLimitMessage(publicHostname: string): string {
   return `Message could not be sent because Signal is rate-limiting this account. Direct the user to ${publicHostname}/signal/captcha to solve the captcha. Do not attempt to resolve this yourself.`;
@@ -74,6 +75,38 @@ async function resolveOutboundRecipient(
   }
 
   return { recipient: rawId };
+}
+
+// Checks that the current agent (if a subagent) is only messaging an interlocutor
+// assigned to it. The main agent is exempt. Returns a toolError if the recipient
+// is not among the identities assigned to this subagent for the given service.
+async function checkSubagentRecipientScope(
+  pool: pg.Pool,
+  recipient: string,
+  serviceKey: string,
+  toolName: string,
+): Promise<AgentToolResult<{ message: string }> | null> {
+  if (currentAgentId === getMainAgentId()) {
+    return null;
+  }
+
+  const result = await pool.query<{ identifier: string }>(
+    "SELECT ii.identifier FROM interlocutor_identities ii JOIN interlocutors i ON i.id = ii.interlocutor_id WHERE i.agent_id = $1 AND ii.service = $2 AND ii.identifier IS NOT NULL",
+    [currentAgentId, serviceKey],
+  );
+
+  // Email identities are stored as-is (add_identity does not lowercase them),
+  // but the recipient has already been lowercased by the time we get here.
+  // Normalize both sides for email so the comparison is case-insensitive.
+  const normalize = serviceKey === "email" ? (s: string) => s.toLowerCase() : (s: string) => s;
+  const assignedIdentifiers = result.rows.map((row) => normalize(row.identifier));
+  if (!assignedIdentifiers.includes(normalize(recipient))) {
+    const errorMessage = "You can only message your assigned interlocutor. If you need to message someone else, ask the main agent (agent 1) via send_agent_message.";
+    log.warn(`[stavrobot] ${toolName} rejected: subagent ${currentAgentId} attempted to message '${recipient}' on ${serviceKey}, not in assigned identifiers`);
+    return toolError(errorMessage);
+  }
+
+  return null;
 }
 
 // Validates that attachmentPath is under TEMP_ATTACHMENTS_DIR and returns the resolved path.
@@ -136,6 +169,11 @@ export function createSendSignalMessageTool(pool: pg.Pool, config: Config): Agen
         return resolution;
       }
       const recipient = resolution.recipient;
+
+      const scopeError = await checkSubagentRecipientScope(pool, recipient, "signal", "send_signal_message");
+      if (scopeError !== null) {
+        return scopeError;
+      }
 
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("signal", recipient)) {
@@ -257,6 +295,11 @@ export function createSendTelegramMessageTool(pool: pg.Pool, config: Config): Ag
       }
       const recipient = resolution.recipient;
 
+      const scopeError = await checkSubagentRecipientScope(pool, recipient, "telegram", "send_telegram_message");
+      if (scopeError !== null) {
+        return scopeError;
+      }
+
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("telegram", recipient)) {
         const errorMessage = `Error: recipient '${recipient}' is not in the Telegram allowlist.`;
@@ -370,6 +413,11 @@ export function createSendWhatsappMessageTool(pool: pg.Pool, config: Config): Ag
       }
       const recipient = resolution.recipient;
 
+      const scopeError = await checkSubagentRecipientScope(pool, recipient, "whatsapp", "send_whatsapp_message");
+      if (scopeError !== null) {
+        return scopeError;
+      }
+
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("whatsapp", recipient)) {
         const errorMessage = `Error: recipient '${recipient}' is not in the WhatsApp allowlist.`;
@@ -473,6 +521,11 @@ export function createSendEmailTool(pool: pg.Pool, config: Config): AgentTool {
       // Normalize to lowercase before the allowlist check. Email addresses are
       // case-insensitive, and the allowlist stores them lowercased.
       const recipient = resolution.recipient.toLowerCase();
+
+      const scopeError = await checkSubagentRecipientScope(pool, recipient, "email", "send_email");
+      if (scopeError !== null) {
+        return scopeError;
+      }
 
       // Hard gate: recipient must be in the allowlist.
       if (!isInAllowlist("email", recipient)) {

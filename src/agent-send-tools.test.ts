@@ -9,11 +9,24 @@ import { initInternalFetch } from "./internal-fetch.js";
 // tests stub the global fetch and never make real HTTP requests.
 initInternalFetch("test-password");
 
-// Mock the database module so resolveRecipient and resolveInterlocutorByName can be controlled per test.
+// Mock the database module so resolveRecipient, resolveInterlocutorByName, and
+// getMainAgentId can be controlled per test.
 vi.mock("./database.js", () => ({
   resolveRecipient: vi.fn(),
   resolveInterlocutorByName: vi.fn(),
+  getMainAgentId: vi.fn().mockReturnValue(1),
 }));
+
+// Mock agent-context so currentAgentId can be controlled per test.
+// The mock exposes a mutable currentAgentId that tests can override via
+// Object.defineProperty on the module namespace.
+vi.mock("./agent-context.js", () => {
+  let _currentAgentId = 1;
+  return {
+    get currentAgentId() { return _currentAgentId; },
+    setCurrentAgentId(id: number) { _currentAgentId = id; },
+  };
+});
 
 // Mock the allowlist module so tests can control which identifiers are allowed
 // without touching the filesystem or module-level state.
@@ -34,10 +47,11 @@ vi.mock("./email-api.js", () => ({
   initializeEmailTransport: vi.fn(),
 }));
 
-import { resolveRecipient, resolveInterlocutorByName } from "./database.js";
+import { resolveRecipient, resolveInterlocutorByName, getMainAgentId } from "./database.js";
 import { isInAllowlist } from "./allowlist.js";
 import { getWhatsappSocket, sendWhatsappTextMessage } from "./whatsapp-api.js";
 import { sendEmail } from "./email-api.js";
+import { setCurrentAgentId } from "./agent-context.js";
 
 function makeText(result: { content: Array<{ type: string; text?: string }> }): string {
   const block = result.content[0];
@@ -577,5 +591,145 @@ describe("send_email — attachment send", () => {
     const tool = createSendEmailTool(pool, config);
     const result = await tool.execute("call-1", { recipient: "Mom", subject: "Hi", message: "hello", attachmentPath: "/etc/passwd" });
     expect(makeText(result)).toContain("attachmentPath must be under the temporary attachments directory");
+  });
+});
+
+// A pool that returns assigned identifiers for the scoping query (agent_id-based)
+// and a found row for the raw-ID identity check.
+function makeScopingPool(assignedIdentifiers: string[], rawIdentifier: string): Pool {
+  return makeMockPool((text: string) => {
+    if (text.includes("agent_id")) {
+      // Scoping query: return the assigned identifiers.
+      return Promise.resolve({
+        rows: assignedIdentifiers.map((identifier) => ({ identifier })),
+        rowCount: assignedIdentifiers.length,
+      } as unknown as QueryResult);
+    }
+    // Raw-ID identity check: return a found row so resolution succeeds.
+    return Promise.resolve({ rows: [{ identifier: rawIdentifier }], rowCount: 1 } as unknown as QueryResult);
+  });
+}
+
+describe("subagent recipient scoping", () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    // Default: main agent (ID 1). Tests that need a subagent override this.
+    setCurrentAgentId(1);
+    vi.mocked(getMainAgentId).mockReturnValue(1);
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+    // Stub fetch to return a successful Signal bridge response so tests that
+    // pass the scoping check don't fail on a real HTTP request.
+    global.fetch = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      text: async () => JSON.stringify({ ok: true }),
+    } as unknown as Response);
+  });
+
+  afterEach(() => {
+    // Reset to main agent after each test.
+    setCurrentAgentId(1);
+    global.fetch = originalFetch;
+  });
+
+  it("allows main agent to send to any Signal recipient", async () => {
+    // Main agent (ID 1) is exempt from scoping.
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "+9999999999" });
+    const pool = makeScopingPool(["+1111111111"], "+9999999999");
+    const config = makeConfig({ signal: { account: "+1111111111" } });
+    const tool = createSendSignalMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "+9999999999", message: "hello" });
+    // Should not be rejected by scoping (may fail for other reasons like signal bridge, but not scoping).
+    expect(makeText(result)).not.toContain("assigned interlocutor");
+  });
+
+  it("allows subagent to send to its assigned Signal interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "+1234567890" });
+    // The scoping pool returns +1234567890 as the assigned identifier for agent 2.
+    const pool = makeScopingPool(["+1234567890"], "+1234567890");
+    const config = makeConfig({ signal: { account: "+1111111111" } });
+    const tool = createSendSignalMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "+1234567890", message: "hello" });
+    expect(makeText(result)).not.toContain("assigned interlocutor");
+  });
+
+  it("rejects subagent sending to a different Signal interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "+9999999999" });
+    // The scoping pool returns only +1234567890 as assigned to agent 2.
+    const pool = makeScopingPool(["+1234567890"], "+9999999999");
+    const config = makeConfig({ signal: { account: "+1111111111" } });
+    const tool = createSendSignalMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "+9999999999", message: "hello" });
+    expect(makeText(result)).toContain("assigned interlocutor");
+    expect(makeText(result)).toContain("send_agent_message");
+  });
+
+  it("allows subagent to send to its assigned Telegram interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "99999" });
+    const pool = makeScopingPool(["99999"], "99999");
+    const config = makeConfig({ telegram: { botToken: "tok" } });
+    const tool = createSendTelegramMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "99999", message: "hello" });
+    expect(makeText(result)).not.toContain("assigned interlocutor");
+  });
+
+  it("rejects subagent sending to a different Telegram interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "88888" });
+    const pool = makeScopingPool(["99999"], "88888");
+    const config = makeConfig({ telegram: { botToken: "tok" } });
+    const tool = createSendTelegramMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "88888", message: "hello" });
+    expect(makeText(result)).toContain("assigned interlocutor");
+    expect(makeText(result)).toContain("send_agent_message");
+  });
+
+  it("allows subagent to send to its assigned WhatsApp interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "+1234567890" });
+    vi.mocked(sendWhatsappTextMessage).mockResolvedValue(undefined);
+    const pool = makeScopingPool(["+1234567890"], "+1234567890");
+    const config = makeConfig({ whatsapp: { account: "test" } });
+    const tool = createSendWhatsappMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "+1234567890", message: "hello" });
+    expect(makeText(result)).not.toContain("assigned interlocutor");
+  });
+
+  it("rejects subagent sending to a different WhatsApp interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "+9999999999" });
+    const pool = makeScopingPool(["+1234567890"], "+9999999999");
+    const config = makeConfig({ whatsapp: { account: "test" } });
+    const tool = createSendWhatsappMessageTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "+9999999999", message: "hello" });
+    expect(makeText(result)).toContain("assigned interlocutor");
+    expect(makeText(result)).toContain("send_agent_message");
+  });
+
+  it("rejects subagent sending to a different email interlocutor", async () => {
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "other@example.com" });
+    // The scoping pool returns only mom@example.com as assigned to agent 2.
+    const pool = makeScopingPool(["mom@example.com"], "other@example.com");
+    const config = makeConfig();
+    const tool = createSendEmailTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "other@example.com", subject: "Hi", message: "hello" });
+    expect(makeText(result)).toContain("assigned interlocutor");
+    expect(makeText(result)).toContain("send_agent_message");
+  });
+
+  it("allows main agent to send email to any recipient", async () => {
+    // Main agent (ID 1) is exempt from scoping.
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "anyone@example.com" });
+    const pool = makeScopingPool(["mom@example.com"], "anyone@example.com");
+    const config = makeConfig();
+    vi.mocked(sendEmail).mockResolvedValue(undefined);
+    const tool = createSendEmailTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "anyone@example.com", subject: "Hi", message: "hello" });
+    expect(makeText(result)).not.toContain("assigned interlocutor");
   });
 });
