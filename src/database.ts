@@ -19,46 +19,6 @@ export async function connectDatabase(): Promise<pg.Pool> {
   return pool;
 }
 
-export async function initializeSchema(pool: pg.Pool): Promise<void> {
-  // Silences the collation version mismatch warning that appears when switching
-  // between Postgres images (e.g. stock postgres:17 to pgvector/pgvector:pg17).
-  await pool.query(`DO $$ BEGIN EXECUTE 'ALTER DATABASE ' || quote_ident(current_database()) || ' REFRESH COLLATION VERSION'; END $$`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id SERIAL PRIMARY KEY,
-      role TEXT NOT NULL,
-      content JSONB NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-}
-
-export async function initializeMemoriesSchema(pool: pg.Pool): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS memories (
-      id SERIAL PRIMARY KEY,
-      content TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  // Backfill existing tables that predate the timestamp columns.
-  await pool.query(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
-  await pool.query(`ALTER TABLE memories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
-}
-
-export async function initializeCompactionsSchema(pool: pg.Pool): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS compactions (
-      id SERIAL PRIMARY KEY,
-      summary TEXT NOT NULL,
-      up_to_message_id INTEGER NOT NULL REFERENCES messages(id),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-}
-
 // Set by seedOwner() on startup. Null until seeding completes.
 let ownerInterlocutorId: number | null = null;
 // Set by seedOwner() on startup. Null until seeding completes.
@@ -87,105 +47,6 @@ export function isOwnerIdentity(service: string, identifier: string): boolean {
     return ownerEmailEntries.some((entry) => matchesEmailEntry(identifier, entry));
   }
   return ownerIdentitySet.has(`${service}:${identifier}`);
-}
-
-export async function initializeAgentsSchema(pool: pg.Pool): Promise<void> {
-  // The agents table must be created first because messages, compactions, and
-  // interlocutors all reference it.
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS agents (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      system_prompt TEXT NOT NULL DEFAULT '',
-      allowed_tools TEXT[] NOT NULL DEFAULT '{}',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  await pool.query(`ALTER TABLE agents ADD COLUMN IF NOT EXISTS allowed_plugins TEXT[] NOT NULL DEFAULT '{}'`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS interlocutors (
-      id SERIAL PRIMARY KEY,
-      display_name TEXT NOT NULL UNIQUE,
-      owner BOOLEAN NOT NULL DEFAULT FALSE,
-      enabled BOOLEAN NOT NULL DEFAULT TRUE,
-      agent_id INTEGER REFERENCES agents(id),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  // The old schema had an instructions column; remove it if it exists.
-  await pool.query(`ALTER TABLE interlocutors DROP COLUMN IF EXISTS instructions`);
-  // The old schema had no agent_id column; add it if it doesn't exist.
-  await pool.query(`ALTER TABLE interlocutors ADD COLUMN IF NOT EXISTS agent_id INTEGER REFERENCES agents(id)`);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS one_owner ON interlocutors (owner) WHERE owner = true
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS interlocutor_identities (
-      id SERIAL PRIMARY KEY,
-      interlocutor_id INTEGER NOT NULL REFERENCES interlocutors(id) ON DELETE CASCADE,
-      service TEXT NOT NULL,
-      identifier TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  // The old schema had identifier NOT NULL; make it nullable to support soft-deletion.
-  await pool.query(`ALTER TABLE interlocutor_identities ALTER COLUMN identifier DROP NOT NULL`);
-  // The old schema had a regular UNIQUE (service, identifier) constraint. Drop it before
-  // creating the partial index, which only covers non-null identifiers to allow multiple
-  // soft-deleted rows per service.
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'interlocutor_identities_service_identifier_key'
-          AND conrelid = 'interlocutor_identities'::regclass
-      ) THEN
-        ALTER TABLE interlocutor_identities DROP CONSTRAINT interlocutor_identities_service_identifier_key;
-      END IF;
-    END
-    $$
-  `);
-  // Soft-deleted rows (identifier IS NULL) must not conflict with each other, so we
-  // use a partial unique index that only covers non-null identifiers.
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS interlocutor_identities_service_identifier
-      ON interlocutor_identities (service, identifier)
-      WHERE identifier IS NOT NULL
-  `);
-
-  // Drop the old interlocutor_id columns from messages and compactions (added by the
-  // previous schema migration). There is no production data in these columns.
-  await pool.query(`ALTER TABLE messages DROP COLUMN IF EXISTS interlocutor_id`);
-  await pool.query(`ALTER TABLE compactions DROP COLUMN IF EXISTS interlocutor_id`);
-
-  // Add agent_id as nullable first so existing rows (which predate the agents system)
-  // can be backfilled before the NOT NULL constraint is applied.
-  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS agent_id INTEGER REFERENCES agents(id)`);
-  await pool.query(`ALTER TABLE compactions ADD COLUMN IF NOT EXISTS agent_id INTEGER REFERENCES agents(id)`);
-
-  // Add the sender columns to messages. Both are nullable; at most one may be set per row.
-  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_identity_id INTEGER REFERENCES interlocutor_identities(id)`);
-  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_agent_id INTEGER REFERENCES agents(id)`);
-
-  // Enforce the at-most-one-sender invariant. The constraint name is stable so
-  // IF NOT EXISTS semantics are achieved by catching the duplicate-object error.
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'messages_at_most_one_sender'
-      ) THEN
-        ALTER TABLE messages ADD CONSTRAINT messages_at_most_one_sender
-          CHECK (
-            NOT (sender_identity_id IS NOT NULL AND sender_agent_id IS NOT NULL)
-          );
-      END IF;
-    END
-    $$
-  `);
 }
 
 export async function seedOwner(pool: pg.Pool, ownerConfig: OwnerConfig): Promise<number> {
@@ -620,22 +481,6 @@ export async function saveMessage(
   return result.rows[0].id;
 }
 
-export async function initializeCronSchema(pool: pg.Pool): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS cron_entries (
-      id SERIAL PRIMARY KEY,
-      cron_expression TEXT,
-      fire_at TIMESTAMPTZ,
-      note TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      CHECK (
-        (cron_expression IS NOT NULL AND fire_at IS NULL) OR
-        (cron_expression IS NULL AND fire_at IS NOT NULL)
-      )
-    )
-  `);
-}
-
 interface SeededCronEntry {
   marker: string;
   cronExpression: string;
@@ -775,45 +620,6 @@ export async function listCronEntries(pool: pg.Pool): Promise<CronEntry[]> {
     fireAt: row.fire_at as Date | null,
     note: row.note as string,
   }));
-}
-
-export async function initializePagesSchema(pool: pg.Pool): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS pages (
-      id SERIAL PRIMARY KEY,
-      path TEXT NOT NULL UNIQUE,
-      mimetype TEXT NOT NULL,
-      data BYTEA NOT NULL,
-      is_public BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await pool.query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS queries JSONB`);
-  await pool.query(`ALTER TABLE pages ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1`);
-  await pool.query(`ALTER TABLE pages DROP COLUMN IF EXISTS updated_at`);
-  // Drop the old unique constraint on path alone and replace it with a composite
-  // unique constraint on (path, version) to support multiple version rows per path.
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'pages_path_key'
-          AND conrelid = 'pages'::regclass
-      ) THEN
-        ALTER TABLE pages DROP CONSTRAINT pages_path_key;
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'pages_path_version_key'
-          AND conrelid = 'pages'::regclass
-      ) THEN
-        ALTER TABLE pages ADD CONSTRAINT pages_path_version_key UNIQUE (path, version);
-      END IF;
-    END
-    $$
-  `);
 }
 
 export interface Page {
@@ -1074,29 +880,6 @@ export async function restorePageVersion(pool: pg.Pool, path: string, version: n
   );
 
   return `Page '${path}' restored from version ${version} as version ${nextVersion}.`;
-}
-
-export async function initializeEmbeddingsSchema(pool: pg.Pool): Promise<void> {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS message_embeddings (
-      message_id INTEGER PRIMARY KEY REFERENCES messages(id),
-      embedding vector(1536) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-}
-
-export async function initializeScratchpadSchema(pool: pg.Pool): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS scratchpad (
-      id SERIAL PRIMARY KEY,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
 }
 
 export interface ScratchpadTitle {

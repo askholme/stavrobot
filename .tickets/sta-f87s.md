@@ -1,6 +1,6 @@
 ---
 id: sta-f87s
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-26T13:05:50Z
