@@ -1,6 +1,6 @@
 ---
 id: sta-gabs
-status: open
+status: closed
 deps: [sta-ent0, sta-4fzz]
 links: []
 created: 2026-03-26T14:25:06Z
