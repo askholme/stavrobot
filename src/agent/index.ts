@@ -5,7 +5,7 @@ import { Agent, type AgentTool, type AgentToolResult, type AgentMessage } from "
 import type { Config } from "../config.js";
 import type { FileAttachment } from "../uploads.js";
 import { getApiKey } from "../auth.js";
-import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, readScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, getMainAgentId, loadAgent, type Memory } from "../database.js";
+import { executeSql, loadMessages, saveMessage, saveCompaction, loadLatestCompaction, loadAllMemories, upsertMemory, deleteMemory, upsertScratchpad, deleteScratchpad, readScratchpad, createCronEntry, updateCronEntry, deleteCronEntry, listCronEntries, loadAllScratchpadTitles, getMainAgentId, loadAgent, type Memory, type Agent as AgentRow } from "../database.js";
 import type { RoutingResult } from "../queue.js";
 import { reloadScheduler } from "../scheduler.js";
 import { createManagePluginsTool, createRunPluginToolTool, createRequestCodingTaskTool } from "../plugin-tools.js";
@@ -468,6 +468,200 @@ export function formatUserMessage(userMessage: string, source?: string, sender?:
   return `Time: ${time}\nSource: ${resolvedSource}\nSender: ${resolvedSender}\nText: ${userMessage}`;
 }
 
+function buildMainAgentSystemPrompt(config: Config, allPlugins: PluginEntry[] | undefined, memories: Memory[], scratchpadTitles: { id: number; title: string }[]): string {
+  const effectiveBasePrompt = (config.customPrompt !== undefined
+    ? `${config.baseSystemPrompt}\n\n${config.customPrompt}`
+    : config.baseSystemPrompt) + buildPromptSuffix(config.publicHostname);
+
+  const visiblePlugins = allPlugins !== undefined && allPlugins.length > 0 ? allPlugins : undefined;
+  const pluginListSection = visiblePlugins !== undefined ? formatPluginListSection(visiblePlugins) : undefined;
+  log.debug(`[stavrobot] fetchPluginList: injecting ${visiblePlugins?.length ?? 0} plugin(s) into system prompt`);
+
+  const promptWithPlugins = pluginListSection !== undefined
+    ? `${effectiveBasePrompt}\n\n${pluginListSection}`
+    : effectiveBasePrompt;
+
+  let systemPrompt = promptWithPlugins;
+
+  if (memories.length > 0) {
+    const memoryLines: string[] = [
+      "These are your memories, they are things you stored yourself. Use the `manage_knowledge` tool (store: \"memory\") to upsert or delete memories. You should add anything that seems important to the user, anything that might have bearing on the future, or anything that will be important to recall later. Keep memories concise — they are injected in full every turn, so avoid storing large amounts of text here. Use the scratchpad for less frequent or longer-form knowledge.",
+      "",
+      "Here are your memories:",
+      "",
+    ];
+
+    for (const memory of memories) {
+      const created = memory.createdAt.toISOString();
+      const updated = memory.updatedAt.toISOString();
+      const timestamp = created === updated
+        ? `created ${created}`
+        : `created ${created}, updated ${updated}`;
+      memoryLines.push(`[Memory ${memory.id}] (${timestamp})`);
+      memoryLines.push(memory.content);
+      memoryLines.push("");
+    }
+
+    systemPrompt = `${systemPrompt}\n\n${memoryLines.join("\n")}`;
+  }
+
+  if (scratchpadTitles.length > 0) {
+    const scratchpadLines = ["Your scratchpad (use manage_knowledge with store: \"scratchpad\" to upsert, delete, or read entries; use the read action to retrieve a body by id):", ""];
+    for (const entry of scratchpadTitles) {
+      scratchpadLines.push(`[Scratchpad ${entry.id}] ${entry.title}`);
+    }
+    log.debug(`[stavrobot] Injecting ${scratchpadTitles.length} scratchpad title(s) into system prompt`);
+    systemPrompt = `${systemPrompt}\n\n${scratchpadLines.join("\n")}`;
+  }
+
+  return systemPrompt;
+}
+
+async function buildSubagentSystemPrompt(config: Config, subagentRow: AgentRow | null, allPlugins: PluginEntry[] | undefined): Promise<string> {
+  const agentSystemPrompt = subagentRow?.systemPrompt ?? "";
+  const subagentAllowedPlugins = subagentRow?.allowedPlugins ?? [];
+
+  const basePrompt = config.baseAgentPrompt.replace("{{main_agent_id}}", String(getMainAgentId())) + buildPromptSuffix(config.publicHostname);
+
+  // Only inject the plugin list if the agent has plugin access. Injecting it
+  // for agents with no plugin access would be noise.
+  let pluginListSection: string | undefined;
+  if (subagentAllowedPlugins.length > 0 && allPlugins !== undefined && allPlugins.length > 0) {
+    let pluginsToShow: PluginEntry[];
+    let accessMap: Map<string, Set<string> | "*">;
+    if (subagentAllowedPlugins.includes("*")) {
+      pluginsToShow = allPlugins;
+      // Wildcard access: all tools in every plugin are visible.
+      accessMap = new Map(allPlugins.map((plugin) => [plugin.name, "*"]));
+    } else {
+      accessMap = buildPluginAccessMap(subagentAllowedPlugins);
+      // Filter to only the plugins the agent has access to. A dotted entry
+      // like "weather.get_forecast" still grants access to the "weather" plugin
+      // listing, so we extract the plugin name from both bare and dotted entries.
+      const accessiblePluginNames = new Set(accessMap.keys());
+      pluginsToShow = allPlugins.filter((plugin) => accessiblePluginNames.has(plugin.name));
+    }
+    if (pluginsToShow.length > 0) {
+      const pluginNames = pluginsToShow.map((plugin) => plugin.name);
+      const toolDetails = await fetchPluginDetails(pluginNames, accessMap);
+      pluginListSection = formatPluginListSection(pluginsToShow, toolDetails);
+      log.debug(`[stavrobot] fetchPluginList: injecting ${pluginsToShow.length} plugin(s) into subagent system prompt`);
+    }
+  }
+
+  const promptWithPlugins = pluginListSection !== undefined
+    ? `${basePrompt}\n\n${pluginListSection}`
+    : basePrompt;
+
+  return agentSystemPrompt.trim() !== ""
+    ? `${promptWithPlugins}\n\n${agentSystemPrompt}`
+    : promptWithPlugins;
+}
+
+async function processAttachments(attachments: FileAttachment[]): Promise<{ resolvedMessage: string | undefined; imageContents: ImageContent[] }> {
+  let resolvedMessage: string | undefined;
+  const imageContents: ImageContent[] = [];
+
+  for (const attachment of attachments) {
+    const isImage = attachment.mimeType.startsWith("image/");
+    const notification =
+      `A file was received.\n` +
+      `Original filename: ${attachment.originalFilename}\n` +
+      `Stored at: ${attachment.storedPath}\n` +
+      `MIME type: ${attachment.mimeType}\n` +
+      `Size: ${attachment.size} bytes\n\n` +
+      `If this is an image, it is already included below. Otherwise, you do not need to read it right now. ` +
+      `If you need to read it, use the manage_uploads tool with action "read". ` +
+      `You shouldn't need to delete it, but if you do, use manage_uploads with action "delete".`;
+    resolvedMessage = resolvedMessage !== undefined ? `${resolvedMessage}\n\n${notification}` : notification;
+
+    if (isImage) {
+      const fileData = await fs.readFile(attachment.storedPath);
+      imageContents.push({ type: "image", data: fileData.toString("base64"), mimeType: attachment.mimeType });
+    }
+  }
+
+  return { resolvedMessage, imageContents };
+}
+
+function triggerCompactionIfNeeded(agent: Agent, pool: pg.Pool, agentId: number, config: Config): void {
+  if (estimateTokens(agent.state.messages) <= config.compactionTokenThreshold || compactionInProgress) {
+    return;
+  }
+
+  compactionInProgress = true;
+  // Snapshot the messages now so the background task works on a stable slice
+  // and never touches agent.state.messages directly.
+  const currentMessages = agent.state.messages.slice();
+
+  log.debug(`[stavrobot] [debug] Compaction triggered: ${currentMessages.length} messages, ~${Math.round(estimateTokens(currentMessages))} estimated tokens`);
+
+  void (async () => {
+    try {
+      const cutIndexOrNull = selectCompactionCutIndex(currentMessages, config.compactionTokenThreshold);
+      if (cutIndexOrNull === null) {
+        log.warn("[stavrobot] Compaction skipped: no safe cut point found (no user messages or all messages fit within the keep budget).");
+        return;
+      }
+      const cutIndex = cutIndexOrNull;
+
+      const messagesToCompact = currentMessages.slice(0, cutIndex);
+      const messagesToKeep = currentMessages.slice(cutIndex);
+
+      log.debug(`[stavrobot] [debug] Cut point: index=${cutIndex}, compacting=${messagesToCompact.length}, keeping=${messagesToKeep.length}`);
+      log.debug(`[stavrobot] [debug] Last compacted message: role=${messagesToCompact[messagesToCompact.length - 1].role}`);
+      log.debug(`[stavrobot] [debug] First kept message: role=${messagesToKeep[0].role}`);
+
+      const serializedMessages = serializeMessagesForSummary(messagesToCompact);
+
+      log.debug(`[stavrobot] [debug] Serialized input for summarizer (${serializedMessages.length} chars): ${serializedMessages.split("\n")[0]}`);
+
+      // Capture the maximum message id in the DB before summarization starts.
+      // Summarization can take several seconds, during which new messages may
+      // be inserted. Without this anchor, the OFFSET-based boundary query
+      // below could land on a message that was never part of the snapshot,
+      // setting upToMessageId past unsummarized messages.
+      const maxIdResult = await pool.query<{ max_id: number }>(
+        "SELECT MAX(id) as max_id FROM messages WHERE agent_id = $1",
+        [agentId],
+      );
+      const snapshotMaxId = maxIdResult.rows[0].max_id;
+
+      const apiKey = await getApiKey(config);
+      const summaryText = await escalatingSummarize(serializedMessages, config, agent.state.model, apiKey);
+
+      const previousCompaction = await loadLatestCompaction(pool, agentId);
+      const previousBoundary = previousCompaction ? previousCompaction.upToMessageId : 0;
+
+      // The boundary must be the last compacted message id. loadMessages keeps
+      // rows with id > upToMessageId, so using keepCount (not keepCount - 1)
+      // preserves exactly messagesToKeep. The query is scoped to this agent
+      // and bounded by snapshotMaxId so the OFFSET only counts messages that
+      // existed when compaction started, not any inserted during summarization.
+      const keepCount = messagesToKeep.length;
+      const cutoffResult = await pool.query(
+        `SELECT id FROM messages WHERE agent_id = $1 AND id > $2 AND id <= $3 ORDER BY id DESC LIMIT 1 OFFSET ${keepCount}`,
+        [agentId, previousBoundary, snapshotMaxId],
+      );
+      if (cutoffResult.rows.length === 0) {
+        log.warn("[stavrobot] Compaction skipped: no cutoff message found for computed boundary.");
+        return;
+      }
+      const upToMessageId = cutoffResult.rows[0].id as number;
+
+      log.debug(`[stavrobot] [debug] Boundary: previousBoundary=${previousBoundary}, keepCount=${keepCount}, upToMessageId=${upToMessageId}`);
+
+      await saveCompaction(pool, summaryText, upToMessageId, agentId);
+      log.info(`[stavrobot] Background compaction complete: compacted ${messagesToCompact.length} messages, kept ${messagesToKeep.length}.`);
+      compactionCompletedForAgent = agentId;
+    } catch (error) {
+      log.error("[stavrobot] Background compaction failed:", error instanceof Error ? error.message : String(error));
+    } finally {
+      compactionInProgress = false;
+    }
+  })();
+}
+
 export async function handlePrompt(
   agent: Agent,
   pool: pg.Pool,
@@ -514,90 +708,9 @@ export async function handlePrompt(
   if (isMainAgent) {
     const memories = await loadAllMemories(pool);
     const scratchpadTitles = await loadAllScratchpadTitles(pool);
-
-    const effectiveBasePrompt = (config.customPrompt !== undefined
-      ? `${config.baseSystemPrompt}\n\n${config.customPrompt}`
-      : config.baseSystemPrompt) + buildPromptSuffix(config.publicHostname);
-
-    const visiblePlugins = allPlugins !== undefined && allPlugins.length > 0 ? allPlugins : undefined;
-    const pluginListSection = visiblePlugins !== undefined ? formatPluginListSection(visiblePlugins) : undefined;
-    log.debug(`[stavrobot] fetchPluginList: injecting ${visiblePlugins?.length ?? 0} plugin(s) into system prompt`);
-
-    const promptWithPlugins = pluginListSection !== undefined
-      ? `${effectiveBasePrompt}\n\n${pluginListSection}`
-      : effectiveBasePrompt;
-
-    systemPrompt = promptWithPlugins;
-
-    if (memories.length > 0) {
-      const memoryLines: string[] = [
-        "These are your memories, they are things you stored yourself. Use the `manage_knowledge` tool (store: \"memory\") to upsert or delete memories. You should add anything that seems important to the user, anything that might have bearing on the future, or anything that will be important to recall later. Keep memories concise — they are injected in full every turn, so avoid storing large amounts of text here. Use the scratchpad for less frequent or longer-form knowledge.",
-        "",
-        "Here are your memories:",
-        "",
-      ];
-
-      for (const memory of memories) {
-        const created = memory.createdAt.toISOString();
-        const updated = memory.updatedAt.toISOString();
-        const timestamp = created === updated
-          ? `created ${created}`
-          : `created ${created}, updated ${updated}`;
-        memoryLines.push(`[Memory ${memory.id}] (${timestamp})`);
-        memoryLines.push(memory.content);
-        memoryLines.push("");
-      }
-
-      systemPrompt = `${systemPrompt}\n\n${memoryLines.join("\n")}`;
-    }
-
-    if (scratchpadTitles.length > 0) {
-      const scratchpadLines = ["Your scratchpad (use manage_knowledge with store: \"scratchpad\" to upsert, delete, or read entries; use the read action to retrieve a body by id):", ""];
-      for (const entry of scratchpadTitles) {
-        scratchpadLines.push(`[Scratchpad ${entry.id}] ${entry.title}`);
-      }
-      log.debug(`[stavrobot] Injecting ${scratchpadTitles.length} scratchpad title(s) into system prompt`);
-      systemPrompt = `${systemPrompt}\n\n${scratchpadLines.join("\n")}`;
-    }
+    systemPrompt = buildMainAgentSystemPrompt(config, allPlugins, memories, scratchpadTitles);
   } else {
-    const agentSystemPrompt = subagentRow?.systemPrompt ?? "";
-    const subagentAllowedPlugins = subagentRow?.allowedPlugins ?? [];
-
-    const basePrompt = config.baseAgentPrompt.replace("{{main_agent_id}}", String(getMainAgentId())) + buildPromptSuffix(config.publicHostname);
-
-    // Only inject the plugin list if the agent has plugin access. Injecting it
-    // for agents with no plugin access would be noise.
-    let pluginListSection: string | undefined;
-    if (subagentAllowedPlugins.length > 0 && allPlugins !== undefined && allPlugins.length > 0) {
-      let pluginsToShow: PluginEntry[];
-      let accessMap: Map<string, Set<string> | "*">;
-      if (subagentAllowedPlugins.includes("*")) {
-        pluginsToShow = allPlugins;
-        // Wildcard access: all tools in every plugin are visible.
-        accessMap = new Map(allPlugins.map((plugin) => [plugin.name, "*"]));
-      } else {
-        accessMap = buildPluginAccessMap(subagentAllowedPlugins);
-        // Filter to only the plugins the agent has access to. A dotted entry
-        // like "weather.get_forecast" still grants access to the "weather" plugin
-        // listing, so we extract the plugin name from both bare and dotted entries.
-        const accessiblePluginNames = new Set(accessMap.keys());
-        pluginsToShow = allPlugins.filter((plugin) => accessiblePluginNames.has(plugin.name));
-      }
-      if (pluginsToShow.length > 0) {
-        const pluginNames = pluginsToShow.map((plugin) => plugin.name);
-        const toolDetails = await fetchPluginDetails(pluginNames, accessMap);
-        pluginListSection = formatPluginListSection(pluginsToShow, toolDetails);
-        log.debug(`[stavrobot] fetchPluginList: injecting ${pluginsToShow.length} plugin(s) into subagent system prompt`);
-      }
-    }
-
-    const promptWithPlugins = pluginListSection !== undefined
-      ? `${basePrompt}\n\n${pluginListSection}`
-      : basePrompt;
-
-    systemPrompt = agentSystemPrompt.trim() !== ""
-      ? `${promptWithPlugins}\n\n${agentSystemPrompt}`
-      : promptWithPlugins;
+    systemPrompt = await buildSubagentSystemPrompt(config, subagentRow, allPlugins);
   }
 
   agent.setSystemPrompt(systemPrompt);
@@ -606,27 +719,14 @@ export async function handlePrompt(
 
   let resolvedMessage = userMessage;
 
-  const imageContents: ImageContent[] = [];
+  let imageContents: ImageContent[] = [];
 
   if (attachments !== undefined && attachments.length > 0) {
-    for (const attachment of attachments) {
-      const isImage = attachment.mimeType.startsWith("image/");
-      const notification =
-        `A file was received.\n` +
-        `Original filename: ${attachment.originalFilename}\n` +
-        `Stored at: ${attachment.storedPath}\n` +
-        `MIME type: ${attachment.mimeType}\n` +
-        `Size: ${attachment.size} bytes\n\n` +
-        `If this is an image, it is already included below. Otherwise, you do not need to read it right now. ` +
-        `If you need to read it, use the manage_uploads tool with action "read". ` +
-        `You shouldn't need to delete it, but if you do, use manage_uploads with action "delete".`;
-      resolvedMessage = resolvedMessage !== undefined ? `${resolvedMessage}\n\n${notification}` : notification;
-
-      if (isImage) {
-        const fileData = await fs.readFile(attachment.storedPath);
-        imageContents.push({ type: "image", data: fileData.toString("base64"), mimeType: attachment.mimeType });
-      }
-    }
+    const processed = await processAttachments(attachments);
+    resolvedMessage = processed.resolvedMessage !== undefined
+      ? (resolvedMessage !== undefined ? `${resolvedMessage}\n\n${processed.resolvedMessage}` : processed.resolvedMessage)
+      : resolvedMessage;
+    imageContents = processed.imageContents;
   }
 
   let autoSearchEmbedding: number[] | undefined;
@@ -792,79 +892,7 @@ export async function handlePrompt(
         .join("")
     : "";
 
-  if (estimateTokens(agent.state.messages) > config.compactionTokenThreshold && !compactionInProgress) {
-    compactionInProgress = true;
-    // Snapshot the messages now so the background task works on a stable slice
-    // and never touches agent.state.messages directly.
-    const currentMessages = agent.state.messages.slice();
-
-    log.debug(`[stavrobot] [debug] Compaction triggered: ${currentMessages.length} messages, ~${Math.round(estimateTokens(currentMessages))} estimated tokens`);
-
-    void (async () => {
-      try {
-        const cutIndexOrNull = selectCompactionCutIndex(currentMessages, config.compactionTokenThreshold);
-        if (cutIndexOrNull === null) {
-          log.warn("[stavrobot] Compaction skipped: no safe cut point found (no user messages or all messages fit within the keep budget).");
-          return;
-        }
-        const cutIndex = cutIndexOrNull;
-
-        const messagesToCompact = currentMessages.slice(0, cutIndex);
-        const messagesToKeep = currentMessages.slice(cutIndex);
-
-        log.debug(`[stavrobot] [debug] Cut point: index=${cutIndex}, compacting=${messagesToCompact.length}, keeping=${messagesToKeep.length}`);
-        log.debug(`[stavrobot] [debug] Last compacted message: role=${messagesToCompact[messagesToCompact.length - 1].role}`);
-        log.debug(`[stavrobot] [debug] First kept message: role=${messagesToKeep[0].role}`);
-
-        const serializedMessages = serializeMessagesForSummary(messagesToCompact);
-
-        log.debug(`[stavrobot] [debug] Serialized input for summarizer (${serializedMessages.length} chars): ${serializedMessages.split("\n")[0]}`);
-
-        // Capture the maximum message id in the DB before summarization starts.
-        // Summarization can take several seconds, during which new messages may
-        // be inserted. Without this anchor, the OFFSET-based boundary query
-        // below could land on a message that was never part of the snapshot,
-        // setting upToMessageId past unsummarized messages.
-        const maxIdResult = await pool.query<{ max_id: number }>(
-          "SELECT MAX(id) as max_id FROM messages WHERE agent_id = $1",
-          [agentId],
-        );
-        const snapshotMaxId = maxIdResult.rows[0].max_id;
-
-        const apiKey = await getApiKey(config);
-        const summaryText = await escalatingSummarize(serializedMessages, config, agent.state.model, apiKey);
-
-        const previousCompaction = await loadLatestCompaction(pool, agentId);
-        const previousBoundary = previousCompaction ? previousCompaction.upToMessageId : 0;
-
-        // The boundary must be the last compacted message id. loadMessages keeps
-        // rows with id > upToMessageId, so using keepCount (not keepCount - 1)
-        // preserves exactly messagesToKeep. The query is scoped to this agent
-        // and bounded by snapshotMaxId so the OFFSET only counts messages that
-        // existed when compaction started, not any inserted during summarization.
-        const keepCount = messagesToKeep.length;
-        const cutoffResult = await pool.query(
-          `SELECT id FROM messages WHERE agent_id = $1 AND id > $2 AND id <= $3 ORDER BY id DESC LIMIT 1 OFFSET ${keepCount}`,
-          [agentId, previousBoundary, snapshotMaxId],
-        );
-        if (cutoffResult.rows.length === 0) {
-          log.warn("[stavrobot] Compaction skipped: no cutoff message found for computed boundary.");
-          return;
-        }
-        const upToMessageId = cutoffResult.rows[0].id as number;
-
-        log.debug(`[stavrobot] [debug] Boundary: previousBoundary=${previousBoundary}, keepCount=${keepCount}, upToMessageId=${upToMessageId}`);
-
-        await saveCompaction(pool, summaryText, upToMessageId, agentId);
-        log.info(`[stavrobot] Background compaction complete: compacted ${messagesToCompact.length} messages, kept ${messagesToKeep.length}.`);
-        compactionCompletedForAgent = agentId;
-      } catch (error) {
-        log.error("[stavrobot] Background compaction failed:", error instanceof Error ? error.message : String(error));
-      } finally {
-        compactionInProgress = false;
-      }
-    })();
-  }
+  triggerCompactionIfNeeded(agent, pool, agentId, config);
 
   return responseText;
 }
