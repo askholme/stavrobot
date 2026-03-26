@@ -1,6 +1,6 @@
 ---
 id: sta-4jkk
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-03-26T13:05:32Z

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isGitUrlSchemeAllowed } from "./index.js";
+import { isGitUrlSchemeAllowed } from "./plugin-lifecycle.js";
 
 describe("isGitUrlSchemeAllowed", () => {
   it("allows https:// URLs", () => {
