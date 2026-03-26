@@ -1,7 +1,7 @@
 ---
 id: sta-e047
 status: open
-deps: [sta-ent0]
+deps: [sta-ent0, sta-4fzz]
 links: []
 created: 2026-03-26T14:25:09Z
 type: task
