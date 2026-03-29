@@ -51,8 +51,14 @@ export async function handleAgentmailWebhook(payload: unknown): Promise<void> {
   const threadId = message.thread_id as string;
   const messageId = message.message_id as string;
   const subject = message.subject as string | undefined;
-  const text = (message.text as string | undefined) ?? "";
+  const text = message.text as string | undefined;
+  const html = message.html as string | undefined;
+  const extractedText = message.extracted_text as string | undefined;
+  const extractedHtml = message.extracted_html as string | undefined;
   const rawAttachments = (message.attachments as AgentmailAttachment[] | undefined) ?? [];
+
+  const textContent = extractedText ?? text ?? "";
+  const htmlContent = extractedHtml ?? html;
 
   const senderEmail = parseEmailAddress(from);
 
@@ -67,7 +73,13 @@ export async function handleAgentmailWebhook(payload: unknown): Promise<void> {
   }
 
   lines.push("");
-  lines.push(text);
+  lines.push(textContent);
+
+  if (htmlContent !== undefined) {
+    lines.push("");
+    lines.push("--- HTML version ---");
+    lines.push(htmlContent);
+  }
 
   if (rawAttachments.length > 0) {
     lines.push("");

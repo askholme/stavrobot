@@ -117,3 +117,61 @@ export async function getAgentmailAttachmentUrl(
     size: response.size,
   };
 }
+
+export async function listAgentmailInboxes(): Promise<AgentMail.inboxes.ListInboxesResponse> {
+  if (client === undefined) {
+    throw new Error("AgentMail client is not initialized");
+  }
+
+  return await client.inboxes.list();
+}
+
+export async function listAgentmailThreads(
+  inboxId: string,
+  options?: { limit?: number; pageToken?: string },
+): Promise<AgentMail.ListThreadsResponse> {
+  if (client === undefined) {
+    throw new Error("AgentMail client is not initialized");
+  }
+
+  return await client.inboxes.threads.list(inboxId, {
+    limit: options?.limit,
+    pageToken: options?.pageToken,
+  });
+}
+
+export async function listAgentmailMessages(
+  inboxId: string,
+  options?: { limit?: number; pageToken?: string },
+): Promise<AgentMail.ListMessagesResponse> {
+  if (client === undefined) {
+    throw new Error("AgentMail client is not initialized");
+  }
+
+  return await client.inboxes.messages.list(inboxId, {
+    limit: options?.limit,
+    pageToken: options?.pageToken,
+  });
+}
+
+export async function getAgentmailMessage(
+  inboxId: string,
+  messageId: string,
+): Promise<AgentMail.Message> {
+  if (client === undefined) {
+    throw new Error("AgentMail client is not initialized");
+  }
+
+  return await client.inboxes.messages.get(inboxId, messageId);
+}
+
+export async function deleteAgentmailThread(
+  inboxId: string,
+  threadId: string,
+): Promise<void> {
+  if (client === undefined) {
+    throw new Error("AgentMail client is not initialized");
+  }
+
+  await client.inboxes.threads.delete(inboxId, threadId);
+}
