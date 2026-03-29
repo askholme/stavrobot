@@ -410,4 +410,128 @@ describe("handleAgentmailWebhook", () => {
     const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
     expect(formattedMessage).not.toContain("Attachments:");
   });
+
+  it("appends HTML section when html is present and no extracted_html", async () => {
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+
+    await handleAgentmailWebhook({
+      message: {
+        from: "sender@example.com",
+        inbox_id: "inbox-1",
+        thread_id: "thread-1",
+        message_id: "msg-1",
+        text: "Plain text",
+        html: "<p>HTML content</p>",
+      },
+    });
+
+    const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
+    expect(formattedMessage).toContain("Plain text");
+    expect(formattedMessage).toContain("--- HTML version ---");
+    expect(formattedMessage).toContain("<p>HTML content</p>");
+  });
+
+  it("prefers extracted_html over html when both are present", async () => {
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+
+    await handleAgentmailWebhook({
+      message: {
+        from: "sender@example.com",
+        inbox_id: "inbox-1",
+        thread_id: "thread-1",
+        message_id: "msg-1",
+        text: "Plain text",
+        html: "<p>Full HTML with quoted history</p>",
+        extracted_html: "<p>Extracted HTML only</p>",
+      },
+    });
+
+    const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
+    expect(formattedMessage).toContain("<p>Extracted HTML only</p>");
+    expect(formattedMessage).not.toContain("<p>Full HTML with quoted history</p>");
+  });
+
+  it("prefers extracted_text over text when both are present", async () => {
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+
+    await handleAgentmailWebhook({
+      message: {
+        from: "sender@example.com",
+        inbox_id: "inbox-1",
+        thread_id: "thread-1",
+        message_id: "msg-1",
+        text: "Full text with quoted history",
+        extracted_text: "Extracted text only",
+      },
+    });
+
+    const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
+    expect(formattedMessage).toContain("Extracted text only");
+    expect(formattedMessage).not.toContain("Full text with quoted history");
+  });
+
+  it("includes HTML section when only html is available and no text", async () => {
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+
+    await handleAgentmailWebhook({
+      message: {
+        from: "sender@example.com",
+        inbox_id: "inbox-1",
+        thread_id: "thread-1",
+        message_id: "msg-1",
+        html: "<p>HTML only email</p>",
+      },
+    });
+
+    const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
+    expect(formattedMessage).toContain("--- HTML version ---");
+    expect(formattedMessage).toContain("<p>HTML only email</p>");
+  });
+
+  it("omits HTML section when no html fields are present", async () => {
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+
+    await handleAgentmailWebhook({
+      message: {
+        from: "sender@example.com",
+        inbox_id: "inbox-1",
+        thread_id: "thread-1",
+        message_id: "msg-1",
+        text: "Plain text only",
+      },
+    });
+
+    const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
+    expect(formattedMessage).not.toContain("--- HTML version ---");
+  });
+
+  it("HTML section appears before Attachments section", async () => {
+    vi.mocked(isInAllowlist).mockReturnValue(true);
+
+    await handleAgentmailWebhook({
+      message: {
+        from: "sender@example.com",
+        inbox_id: "inbox-1",
+        thread_id: "thread-1",
+        message_id: "msg-1",
+        text: "See attached",
+        html: "<p>See attached</p>",
+        attachments: [
+          {
+            attachment_id: "att-1",
+            filename: "file.pdf",
+            size: 100,
+            content_type: "application/pdf",
+          },
+        ],
+      },
+    });
+
+    const formattedMessage = vi.mocked(enqueueMessage).mock.calls[0][0] as string;
+    const htmlIndex = formattedMessage.indexOf("--- HTML version ---");
+    const attachmentsIndex = formattedMessage.indexOf("Attachments:");
+    expect(htmlIndex).toBeGreaterThan(-1);
+    expect(attachmentsIndex).toBeGreaterThan(-1);
+    expect(htmlIndex).toBeLessThan(attachmentsIndex);
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Pool, QueryResult } from "pg";
-import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool, createSendAgentmailTool, createDownloadAgentmailAttachmentTool } from "./send-tools.js";
+import { createSendSignalMessageTool, createSendTelegramMessageTool, createSendWhatsappMessageTool, createSendEmailTool, createSendAgentmailTool, createManageAgentmailTool } from "./send-tools.js";
 import type { Config } from "./config.js";
 import { initInternalFetch } from "./internal-fetch.js";
 
@@ -47,10 +47,15 @@ vi.mock("./email-api.js", () => ({
   initializeEmailTransport: vi.fn(),
 }));
 
-// Mock the agentmail-api module so tests can control sendAgentmailMessage and getAgentmailAttachmentUrl.
+// Mock the agentmail-api module so tests can control all agentmail API functions.
 vi.mock("./agentmail-api.js", () => ({
   sendAgentmailMessage: vi.fn(),
   getAgentmailAttachmentUrl: vi.fn(),
+  listAgentmailInboxes: vi.fn(),
+  listAgentmailThreads: vi.fn(),
+  listAgentmailMessages: vi.fn(),
+  getAgentmailMessage: vi.fn(),
+  deleteAgentmailThread: vi.fn(),
   initializeAgentmailClient: vi.fn(),
   registerAgentmailWebhook: vi.fn(),
 }));
@@ -64,7 +69,7 @@ import { resolveRecipient, resolveInterlocutorByName, getMainAgentId } from "./d
 import { isInAllowlist } from "./allowlist.js";
 import { getWhatsappSocket, sendWhatsappTextMessage } from "./whatsapp-api.js";
 import { sendEmail } from "./email-api.js";
-import { sendAgentmailMessage, getAgentmailAttachmentUrl } from "./agentmail-api.js";
+import { sendAgentmailMessage, getAgentmailAttachmentUrl, listAgentmailInboxes, listAgentmailThreads, listAgentmailMessages, getAgentmailMessage, deleteAgentmailThread } from "./agentmail-api.js";
 import { saveAttachment } from "./uploads.js";
 import { setCurrentAgentId } from "./agent-context.js";
 
@@ -781,6 +786,20 @@ describe("subagent recipient scoping", () => {
     expect(makeText(result)).toContain("assigned interlocutor");
     expect(makeText(result)).toContain("send_agent_message");
   });
+
+  it("allows subagent to send agentmail when stored identity has mixed case", async () => {
+    // The stored identity is "Assigned@Example.com" (mixed case) but the recipient
+    // is lowercased to "assigned@example.com" before checkSubagentRecipientScope is called.
+    // Without case normalization for agentmail, the comparison would fail.
+    setCurrentAgentId(2);
+    vi.mocked(resolveRecipient).mockResolvedValue({ identifier: "assigned@example.com" });
+    const pool = makeScopingPool(["Assigned@Example.com"], "assigned@example.com");
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    vi.mocked(sendAgentmailMessage).mockResolvedValue(undefined);
+    const tool = createSendAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { recipient: "assigned@example.com", inboxId: "inbox-1", subject: "Hi", message: "hello" });
+    expect(makeText(result)).not.toContain("assigned interlocutor");
+  });
 });
 
 describe("isInAllowlist (via send tools) — agentmail", () => {
@@ -947,7 +966,217 @@ describe("send_agentmail — attachment send", () => {
   });
 });
 
-describe("download_agentmail_attachment — happy path", () => {
+describe("manage_agentmail — list_inboxes", () => {
+  it("returns formatted inbox list", async () => {
+    vi.mocked(listAgentmailInboxes).mockResolvedValue({
+      count: 2,
+      inboxes: [
+        { inboxId: "inbox-1", email: "bot@example.com", displayName: "Bot Inbox", podId: "pod-1", updatedAt: new Date("2024-01-01"), createdAt: new Date("2024-01-01") },
+        { inboxId: "inbox-2", email: "support@example.com", displayName: undefined, podId: "pod-1", updatedAt: new Date("2024-01-01"), createdAt: new Date("2024-01-01") },
+      ],
+    });
+
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "list_inboxes" });
+
+    const text = makeText(result);
+    expect(text).toContain("Count: 2");
+    expect(text).toContain("inbox-1");
+    expect(text).toContain("bot@example.com");
+    expect(text).toContain("Bot Inbox");
+    expect(text).toContain("inbox-2");
+    expect(text).toContain("support@example.com");
+  });
+});
+
+describe("manage_agentmail — list_threads", () => {
+  it("returns formatted thread list", async () => {
+    vi.mocked(listAgentmailThreads).mockResolvedValue({
+      count: 1,
+      threads: [
+        {
+          inboxId: "inbox-1",
+          threadId: "thread-1",
+          labels: [],
+          timestamp: new Date("2024-06-01T10:00:00Z"),
+          senders: ["alice@example.com"],
+          recipients: ["bot@example.com"],
+          subject: "Hello",
+          preview: "Hi there, how are you?",
+          messageCount: 2,
+          size: 1024,
+          lastMessageId: "msg-2",
+          updatedAt: new Date("2024-06-01"),
+          createdAt: new Date("2024-06-01"),
+        },
+      ],
+    });
+
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "list_threads", inboxId: "inbox-1" });
+
+    expect(vi.mocked(listAgentmailThreads)).toHaveBeenCalledWith("inbox-1", { limit: undefined, pageToken: undefined });
+    const text = makeText(result);
+    expect(text).toContain("Count: 1");
+    expect(text).toContain("thread-1");
+    expect(text).toContain("Hello");
+    expect(text).toContain("alice@example.com");
+    expect(text).toContain("2");
+  });
+
+  it("returns error when inboxId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "list_threads" });
+    expect(makeText(result)).toContain("inboxId is required");
+  });
+});
+
+describe("manage_agentmail — list_messages", () => {
+  it("returns formatted message list", async () => {
+    vi.mocked(listAgentmailMessages).mockResolvedValue({
+      count: 1,
+      messages: [
+        {
+          inboxId: "inbox-1",
+          threadId: "thread-1",
+          messageId: "msg-1",
+          labels: [],
+          timestamp: new Date("2024-06-01T10:00:00Z"),
+          from: "alice@example.com",
+          to: ["bot@example.com"],
+          subject: "Hello",
+          preview: "Hi there",
+          attachments: [{ attachmentId: "att-1", size: 512 }],
+          size: 1024,
+          updatedAt: new Date("2024-06-01"),
+          createdAt: new Date("2024-06-01"),
+        },
+      ],
+    });
+
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "list_messages", inboxId: "inbox-1" });
+
+    expect(vi.mocked(listAgentmailMessages)).toHaveBeenCalledWith("inbox-1", { limit: undefined, pageToken: undefined });
+    const text = makeText(result);
+    expect(text).toContain("Count: 1");
+    expect(text).toContain("msg-1");
+    expect(text).toContain("alice@example.com");
+    expect(text).toContain("Hello");
+    expect(text).toContain("Attachments: 1");
+  });
+
+  it("returns error when inboxId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "list_messages" });
+    expect(makeText(result)).toContain("inboxId is required");
+  });
+});
+
+describe("manage_agentmail — get_message", () => {
+  it("returns full message details including text and html content", async () => {
+    vi.mocked(getAgentmailMessage).mockResolvedValue({
+      inboxId: "inbox-1",
+      threadId: "thread-1",
+      messageId: "msg-1",
+      labels: [],
+      timestamp: new Date("2024-06-01T10:00:00Z"),
+      from: "alice@example.com",
+      to: ["bot@example.com"],
+      cc: ["cc@example.com"],
+      subject: "Hello",
+      extractedText: "Hi there, this is the extracted text.",
+      extractedHtml: "<p>Hi there</p>",
+      text: "Full text body",
+      html: "<p>Full HTML body</p>",
+      attachments: [
+        { attachmentId: "att-1", filename: "report.pdf", contentType: "application/pdf", size: 1024 },
+      ],
+      size: 2048,
+      updatedAt: new Date("2024-06-01"),
+      createdAt: new Date("2024-06-01"),
+    });
+
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "get_message", inboxId: "inbox-1", messageId: "msg-1" });
+
+    expect(vi.mocked(getAgentmailMessage)).toHaveBeenCalledWith("inbox-1", "msg-1");
+    const text = makeText(result);
+    expect(text).toContain("alice@example.com");
+    expect(text).toContain("bot@example.com");
+    expect(text).toContain("cc@example.com");
+    expect(text).toContain("Hello");
+    // Should prefer extractedText over text
+    expect(text).toContain("Hi there, this is the extracted text.");
+    expect(text).not.toContain("Full text body");
+    // Should prefer extractedHtml over html
+    expect(text).toContain("<p>Hi there</p>");
+    expect(text).not.toContain("<p>Full HTML body</p>");
+    expect(text).toContain("att-1");
+    expect(text).toContain("report.pdf");
+  });
+
+  it("returns error when inboxId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "get_message", messageId: "msg-1" });
+    expect(makeText(result)).toContain("inboxId is required");
+  });
+
+  it("returns error when messageId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "get_message", inboxId: "inbox-1" });
+    expect(makeText(result)).toContain("messageId is required");
+  });
+});
+
+describe("manage_agentmail — delete_thread", () => {
+  it("deletes the thread and returns success message", async () => {
+    vi.mocked(deleteAgentmailThread).mockResolvedValue(undefined);
+
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "delete_thread", inboxId: "inbox-1", threadId: "thread-1" });
+
+    expect(vi.mocked(deleteAgentmailThread)).toHaveBeenCalledWith("inbox-1", "thread-1");
+    expect(makeText(result)).toContain("thread-1");
+    expect(makeText(result)).toContain("deleted");
+  });
+
+  it("returns error when inboxId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "delete_thread", threadId: "thread-1" });
+    expect(makeText(result)).toContain("inboxId is required");
+  });
+
+  it("returns error when threadId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "delete_thread", inboxId: "inbox-1" });
+    expect(makeText(result)).toContain("threadId is required");
+  });
+});
+
+describe("manage_agentmail — download_attachment", () => {
   it("fetches the attachment URL, saves it, and returns the stored path and metadata", async () => {
     vi.mocked(getAgentmailAttachmentUrl).mockResolvedValue({
       downloadUrl: "https://cdn.example.com/attachment.pdf",
@@ -969,8 +1198,8 @@ describe("download_agentmail_attachment — happy path", () => {
 
     const pool = makeEmptyPool();
     const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
-    const tool = createDownloadAgentmailAttachmentTool(pool, config);
-    const result = await tool.execute("call-1", { inboxId: "inbox-1", messageId: "msg-1", attachmentId: "att-1" });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "download_attachment", inboxId: "inbox-1", messageId: "msg-1", attachmentId: "att-1" });
 
     expect(vi.mocked(getAgentmailAttachmentUrl)).toHaveBeenCalledWith("inbox-1", "msg-1", "att-1");
     expect(vi.mocked(saveAttachment)).toHaveBeenCalledWith(
@@ -1014,13 +1243,37 @@ describe("download_agentmail_attachment — happy path", () => {
 
     const pool = makeEmptyPool();
     const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
-    const tool = createDownloadAgentmailAttachmentTool(pool, config);
-    await tool.execute("call-1", { inboxId: "inbox-1", messageId: "msg-1", attachmentId: "att-99" });
+    const tool = createManageAgentmailTool(pool, config);
+    await tool.execute("call-1", { action: "download_attachment", inboxId: "inbox-1", messageId: "msg-1", attachmentId: "att-99" });
 
     expect(vi.mocked(saveAttachment)).toHaveBeenCalledWith(
       expect.any(Buffer),
       "att-99",
       "application/octet-stream",
     );
+  });
+
+  it("returns error when inboxId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "download_attachment", messageId: "msg-1", attachmentId: "att-1" });
+    expect(makeText(result)).toContain("inboxId is required");
+  });
+
+  it("returns error when messageId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "download_attachment", inboxId: "inbox-1", attachmentId: "att-1" });
+    expect(makeText(result)).toContain("messageId is required");
+  });
+
+  it("returns error when attachmentId is missing", async () => {
+    const pool = makeEmptyPool();
+    const config = makeConfig({ agentmail: { apiKey: "test-agentmail-key" } });
+    const tool = createManageAgentmailTool(pool, config);
+    const result = await tool.execute("call-1", { action: "download_attachment", inboxId: "inbox-1", messageId: "msg-1" });
+    expect(makeText(result)).toContain("attachmentId is required");
   });
 });
