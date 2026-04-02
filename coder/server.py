@@ -23,8 +23,11 @@ CODER_CREDENTIALS_PATH = "/home/coder/.claude/.credentials.json"
 PLUGIN_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 
 
-def load_config() -> tuple[str, str]:
-    """Read config.toml and return (password, model).
+def load_config() -> tuple[str, str, str | None, str | None]:
+    """Read config.toml and return (password, model, api_key, coder_base_url).
+
+    api_key and coder_base_url are None when not configured. coder_base_url has
+    any trailing /v1 stripped, since Claude Code adds its own path segments.
 
     Raises SystemExit if the password is missing, since the server must not
     start without authentication configured.
@@ -40,10 +43,17 @@ def load_config() -> tuple[str, str]:
     coder_section = config.get("coder", {})
     model = coder_section["model"]
 
-    return password, model
+    api_key: str | None = config.get("apiKey")
+    base_url: str | None = config.get("baseUrl")
+
+    coder_base_url: str | None = None
+    if base_url is not None:
+        coder_base_url = base_url[:-3] if base_url.endswith("/v1") else base_url
+
+    return password, model, api_key, coder_base_url
 
 
-PASSWORD, MODEL = load_config()
+PASSWORD, MODEL, API_KEY, BASE_URL = load_config()
 
 
 def ensure_plugin_user(plugin_name: str, uid: int, gid: int) -> None:
@@ -57,21 +67,38 @@ def ensure_plugin_user(plugin_name: str, uid: int, gid: int) -> None:
     try:
         group_result = subprocess.run(
             ["groupadd", "--system", "--gid", str(gid), username],
-            capture_output=True, check=False,
+            capture_output=True,
+            check=False,
         )
         # Exit code 9 means the group already exists, which is fine.
         if group_result.returncode not in (0, 9):
-            print(f"[stavrobot-coder] Warning: groupadd exited with code {group_result.returncode} for {username}: {group_result.stderr.decode(errors='replace').strip()}")
+            print(
+                f"[stavrobot-coder] Warning: groupadd exited with code {group_result.returncode} for {username}: {group_result.stderr.decode(errors='replace').strip()}"
+            )
 
         user_result = subprocess.run(
-            ["useradd", "--system", "--no-create-home", "--uid", str(uid), "--gid", str(gid), username],
-            capture_output=True, check=False,
+            [
+                "useradd",
+                "--system",
+                "--no-create-home",
+                "--uid",
+                str(uid),
+                "--gid",
+                str(gid),
+                username,
+            ],
+            capture_output=True,
+            check=False,
         )
         # Exit code 9 means the user already exists, which is fine.
         if user_result.returncode not in (0, 9):
-            print(f"[stavrobot-coder] Warning: useradd exited with code {user_result.returncode} for {username}: {user_result.stderr.decode(errors='replace').strip()}")
+            print(
+                f"[stavrobot-coder] Warning: useradd exited with code {user_result.returncode} for {username}: {user_result.stderr.decode(errors='replace').strip()}"
+            )
     except FileNotFoundError:
-        print(f"[stavrobot-coder] Warning: useradd/groupadd not available, skipping user creation for {username}")
+        print(
+            f"[stavrobot-coder] Warning: useradd/groupadd not available, skipping user creation for {username}"
+        )
 
 
 def setup_plugin_credentials(plugin_dir: str, uid: int, gid: int) -> None:
@@ -86,7 +113,9 @@ def setup_plugin_credentials(plugin_dir: str, uid: int, gid: int) -> None:
     # above and the directory creation: a racing plugin could have replaced the newly
     # created directory with a symlink before we get here.
     if os.path.islink(plugin_claude_dir):
-        raise RuntimeError(f"Race condition detected: {plugin_claude_dir} is a symlink after makedirs")
+        raise RuntimeError(
+            f"Race condition detected: {plugin_claude_dir} is a symlink after makedirs"
+        )
     # Guard against the credentials file itself being a symlink, which would cause
     # shutil.copy2 (running as root) to overwrite the symlink target instead of
     # creating a regular file.
@@ -115,7 +144,9 @@ def teardown_plugin_credentials(plugin_dir: str) -> None:
         # .credentials.json with a symlink. Since this copy runs as root, following a
         # symlink here would allow the plugin to read arbitrary root-owned files.
         if os.path.islink(plugin_credentials):
-            print(f"[stavrobot-coder] Warning: {plugin_credentials} is a symlink; skipping credential copy-back")
+            print(
+                f"[stavrobot-coder] Warning: {plugin_credentials} is a symlink; skipping credential copy-back"
+            )
         else:
             shutil.copy2(plugin_credentials, CODER_CREDENTIALS_PATH)
     shutil.rmtree(plugin_claude_dir, ignore_errors=True)
@@ -132,11 +163,13 @@ def make_auth_header() -> str:
 
 def post_result(message: str) -> None:
     """Post the coding task result back to the main app's internal /chat endpoint."""
-    body = json.dumps({
-        "message": message,
-        "source": "coder",
-        "sender": "coder-agent",
-    }).encode()
+    body = json.dumps(
+        {
+            "message": message,
+            "source": "coder",
+            "sender": "coder-agent",
+        }
+    ).encode()
 
     headers = {
         "Content-Type": "application/json",
@@ -164,6 +197,7 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
 
     credentials_set_up = False
     result_text = ""
+    use_api_key_auth = API_KEY is not None and BASE_URL is not None
 
     try:
         stat = os.stat(cwd)
@@ -175,11 +209,14 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
         # has a valid passwd entry.
         ensure_plugin_user(plugin, uid, gid)
 
-        # Copy credentials into the plugin directory so claude can authenticate when
-        # running as the plugin user. HOME is set to the plugin directory so claude
-        # finds .claude/.credentials there.
-        setup_plugin_credentials(cwd, uid, gid)
-        credentials_set_up = True
+        if use_api_key_auth:
+            print(f"[stavrobot-coder] Using API key auth for task {task_id}")
+        else:
+            # Copy credentials into the plugin directory so claude can authenticate when
+            # running as the plugin user. HOME is set to the plugin directory so claude
+            # finds .claude/.credentials there.
+            setup_plugin_credentials(cwd, uid, gid)
+            credentials_set_up = True
 
         # Ensure the per-plugin cache directory exists and is owned by the plugin user.
         cache_dir = f"/cache/{plugin}/uv"
@@ -187,10 +224,12 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
         # The -h flag makes chown change ownership of symlinks themselves rather than
         # following them, preventing a plugin from using a symlink in its cache directory
         # to cause root to chown an arbitrary file.
-        subprocess.run(["chown", "-R", "-h", f"{uid}:{gid}", f"/cache/{plugin}"], check=True)
+        subprocess.run(
+            ["chown", "-R", "-h", f"{uid}:{gid}", f"/cache/{plugin}"], check=True
+        )
 
         username = f"plug_{plugin.replace('-', '_')}"[:MAX_USERNAME_LENGTH]
-        subprocess_env = {
+        subprocess_env: dict[str, str] = {
             "HOME": cwd,
             "PATH": "/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin",
             "USER": username,
@@ -202,17 +241,25 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
             "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
         }
 
+        if use_api_key_auth and API_KEY is not None and BASE_URL is not None:
+            subprocess_env["ANTHROPIC_API_KEY"] = API_KEY
+            subprocess_env["ANTHROPIC_BASE_URL"] = BASE_URL
+
         print(f"[stavrobot-coder] Running as uid={uid} gid={gid} in {cwd}")
 
         result = subprocess.run(
             [
                 "claude",
-                "-p", message,
-                "--output-format", "json",
+                "-p",
+                message,
+                "--output-format",
+                "json",
                 "--dangerously-skip-permissions",
-                "--append-system-prompt-file", SYSTEM_PROMPT_PATH,
+                "--append-system-prompt-file",
+                SYSTEM_PROMPT_PATH,
                 "--no-session-persistence",
-                "--model", MODEL,
+                "--model",
+                MODEL,
             ],
             cwd=cwd,
             capture_output=True,
@@ -223,13 +270,17 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
             env=subprocess_env,
         )
 
-        print(f"[stavrobot-coder] Task {task_id} subprocess exited with code {result.returncode}")
+        print(
+            f"[stavrobot-coder] Task {task_id} subprocess exited with code {result.returncode}"
+        )
         print(f"[stavrobot-coder] Task {task_id} stdout: {result.stdout}")
         if result.stderr:
             print(f"[stavrobot-coder] Task {task_id} stderr: {result.stderr}")
 
         if not result.stdout.strip():
-            stderr_snippet = result.stderr.strip()[:500] if result.stderr else "no output"
+            stderr_snippet = (
+                result.stderr.strip()[:500] if result.stderr else "no output"
+            )
             result_text = f"Coding task failed: claude produced no output (exit code {result.returncode}). stderr: {stderr_snippet}"
         else:
             output = json.loads(result.stdout)
@@ -238,7 +289,11 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
 
             if subtype != "success" or is_error:
                 errors = output.get("errors", [])
-                error_detail = "\n".join(str(e) for e in errors) if errors else output.get("result", "unknown error")
+                error_detail = (
+                    "\n".join(str(e) for e in errors)
+                    if errors
+                    else output.get("result", "unknown error")
+                )
                 result_text = "Coding task failed: " + error_detail
             else:
                 result_text = output.get("result", "")
@@ -252,8 +307,12 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
                 result_text = result_text + usage_footer
 
     except subprocess.TimeoutExpired:
-        print(f"[stavrobot-coder] Task {task_id} timed out after {TASK_TIMEOUT_SECONDS}s")
-        result_text = f"Coding task failed: timed out after {TASK_TIMEOUT_SECONDS} seconds."
+        print(
+            f"[stavrobot-coder] Task {task_id} timed out after {TASK_TIMEOUT_SECONDS}s"
+        )
+        result_text = (
+            f"Coding task failed: timed out after {TASK_TIMEOUT_SECONDS} seconds."
+        )
     except Exception as error:
         print(f"[stavrobot-coder] Task {task_id} raised an exception: {error}")
         result_text = f"Coding task failed: {error}"
@@ -261,7 +320,9 @@ def run_coding_task(task_id: str, message: str, plugin: str) -> None:
         if credentials_set_up:
             teardown_plugin_credentials(cwd)
 
-    print(f"[stavrobot-coder] Posting result for task {task_id}, length: {len(result_text)}")
+    print(
+        f"[stavrobot-coder] Posting result for task {task_id}, length: {len(result_text)}"
+    )
     post_result(result_text)
 
 
@@ -272,7 +333,7 @@ def check_auth(auth_header: str | None) -> bool:
     if not auth_header.startswith("Basic "):
         return False
     try:
-        decoded = base64.b64decode(auth_header[len("Basic "):]).decode()
+        decoded = base64.b64decode(auth_header[len("Basic ") :]).decode()
     except Exception:
         return False
     # The format is ":password" (empty username).
@@ -309,17 +370,29 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             plugin = payload["plugin"]
 
             if not PLUGIN_NAME_RE.match(plugin):
-                print(f"[stavrobot-coder] Rejecting task {task_id}: invalid plugin name: {plugin!r}")
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Invalid plugin name: {plugin!r}"})
+                print(
+                    f"[stavrobot-coder] Rejecting task {task_id}: invalid plugin name: {plugin!r}"
+                )
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": f"Invalid plugin name: {plugin!r}"},
+                )
                 return
 
             plugin_dir = os.path.join(PLUGINS_DIR, plugin)
             if not os.path.isdir(plugin_dir):
-                print(f"[stavrobot-coder] Rejecting task {task_id}: plugin directory not found: {plugin_dir}")
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"Plugin directory not found: {plugin!r}"})
+                print(
+                    f"[stavrobot-coder] Rejecting task {task_id}: plugin directory not found: {plugin_dir}"
+                )
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": f"Plugin directory not found: {plugin!r}"},
+                )
                 return
 
-            print(f"[stavrobot-coder] Received coding task {task_id} for plugin {plugin!r}: {message[:100]}")
+            print(
+                f"[stavrobot-coder] Received coding task {task_id} for plugin {plugin!r}: {message[:100]}"
+            )
 
             thread = Thread(
                 target=run_coding_task,
